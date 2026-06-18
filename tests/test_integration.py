@@ -49,6 +49,39 @@ def main():
         _check(abs(r0.tokens_per_s - expect) < 1e-6, "tokens_per_s ≈ tokens ÷ (e2e − ttft)")
         print_summary(summarize(results))
 
+        # --- 原文擷取：輸入 / 思考內容 / 輸出內容 / 完整原始回應 ---
+        print("[原文] 擷取輸入、思考內容、輸出內容與完整 JSON")
+        import json as _json
+        _check(bool(r0.input_text), "擷取到輸入原文 input_text")
+        _check(bool(r0.output_text) and r0.output_chars == len(r0.output_text),
+               "擷取到輸出內容 output_text（字數與 output_chars 一致）")
+        _check(bool(r0.reasoning_text), "擷取到思考內容 reasoning_text（reasoning_content）")
+        chunks = _json.loads(r0.raw_response)
+        _check(isinstance(chunks, list) and len(chunks) > 0,
+               "raw_response 為可解析的完整串流 JSON（保留所有 chunk）")
+
+        # --- 欄位契約：CSV 含原文三欄、但排除超長的 raw_response（只進 JSON）---
+        from core.metrics import field_names
+        cols = field_names()
+        _check(all(c in cols for c in ("input_text", "reasoning_text", "output_text")),
+               "CSV 欄位含 input_text / reasoning_text / output_text")
+        _check("raw_response" not in cols, "CSV 欄位不含 raw_response（只寫進 JSON）")
+        _check("raw_response" in field_names(include_raw=True),
+               "field_names(include_raw=True) 含 raw_response")
+
+        # --- 輸出契約：write_outputs 同時產生 CSV + JSON 明細 ---
+        import tempfile as _tmp
+        from core.reporter import write_outputs
+        csv_p, json_p = write_outputs(results, os.path.join(_tmp.mkdtemp(), "it_single_MOCK.csv"))
+        _check(os.path.exists(csv_p) and os.path.exists(json_p),
+               "write_outputs 同時產生 CSV 與 JSON 明細")
+        with open(json_p, encoding="utf-8") as _f:
+            recs = _json.load(_f)
+        _check(len(recs) == len(results) and bool(recs[0].get("output_text")),
+               "JSON 明細每筆含 output_text")
+        _check(isinstance(recs[0].get("raw_response"), list),
+               "JSON 明細的 raw_response 已還原為巢狀物件")
+
         # --- 並發（AC3 雛形）---
         print("[並發] run_concurrent concurrency=8 n=24")
         cres, wall = run_concurrent(adapter, ["hi"] * 24, concurrency=8,

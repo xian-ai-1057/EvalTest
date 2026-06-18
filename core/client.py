@@ -28,6 +28,13 @@ def _rate(n: Optional[int], seconds: Optional[float]) -> Optional[float]:
     return n / seconds
 
 
+def _payload_text(payload) -> str:
+    """把輸入轉成可讀「原文」：messages 串列 / dict 轉 JSON 字串，其餘直接字串化。"""
+    if isinstance(payload, (list, dict)):
+        return json.dumps(payload, ensure_ascii=False)
+    return str(payload)
+
+
 class OpenAIChatAdapter:
     """OpenAI 相容 chat。串流模式下可量 TTFT/TPOT；非串流只量端到端。"""
 
@@ -74,6 +81,8 @@ class OpenAIChatAdapter:
     def _call_stream(self, payload, max_tokens, temperature, t0, r: RequestResult):
         body = self._body(payload, max_tokens, temperature, stream=True)
         text_parts = []
+        reason_parts = []        # 思考內容（reasoning_content）逐塊累積
+        raw_chunks = []          # 完整串流原始 chunk，供 JSON 明細保存
         t_first = None
         t_last = None
         n_chunks = 0
@@ -95,6 +104,7 @@ class OpenAIChatAdapter:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                raw_chunks.append(chunk)
                 # usage 可能單獨出現在末包（choices 為空）
                 if chunk.get("usage"):
                     usage_tokens = chunk["usage"].get("completion_tokens")
@@ -102,6 +112,12 @@ class OpenAIChatAdapter:
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
+                # 思考內容：相容 reasoning_content（DeepSeek / vLLM）與 reasoning 兩種欄名
+                reason_piece = delta.get("reasoning_content")
+                if reason_piece is None:
+                    reason_piece = delta.get("reasoning")
+                if reason_piece:
+                    reason_parts.append(reason_piece)
                 piece = delta.get("content")
                 if piece:
                     now = time.perf_counter()
@@ -117,6 +133,11 @@ class OpenAIChatAdapter:
         r.e2e_s = t_end - t0
         r.output_chars = len(text)
         r.output_tokens = usage_tokens if usage_tokens is not None else n_chunks
+        # 原文：輸入、思考內容、輸出內容，以及完整串流原始回應（所有 chunk）
+        r.input_text = _payload_text(payload)
+        r.reasoning_text = "".join(reason_parts)
+        r.output_text = text
+        r.raw_response = json.dumps(raw_chunks, ensure_ascii=False)
         if t_first is not None:
             r.ttft_ms = (t_first - t0) * 1000.0
             if n_chunks > 1 and t_last > t_first:
@@ -137,9 +158,12 @@ class OpenAIChatAdapter:
         t_end = time.perf_counter()
         obj = resp.json()
         text = ""
+        reasoning = ""
         choices = obj.get("choices") or []
         if choices:
-            text = (choices[0].get("message") or {}).get("content", "") or ""
+            msg = choices[0].get("message") or {}
+            text = msg.get("content", "") or ""
+            reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
         usage = obj.get("usage") or {}
         r.success = True
         r.e2e_s = t_end - t0
@@ -148,6 +172,11 @@ class OpenAIChatAdapter:
         # 非串流無法量首字/逐字延遲
         r.tokens_per_s = _rate(r.output_tokens, r.e2e_s)
         r.chars_per_s = _rate(r.output_chars, r.e2e_s)
+        # 原文：輸入、思考內容、輸出內容，以及完整原始回應
+        r.input_text = _payload_text(payload)
+        r.reasoning_text = reasoning
+        r.output_text = text
+        r.raw_response = json.dumps(obj, ensure_ascii=False)
 
 
 def _dig(obj, path: str):
@@ -206,12 +235,17 @@ class GenericJSONAdapter:
             r.status_code = resp.status_code
             resp.raise_for_status()
             t_end = time.perf_counter()
-            out = _dig(resp.json(), self.response_path)
+            obj = resp.json()
+            out = _dig(obj, self.response_path)
             text = "" if out is None else (out if isinstance(out, str) else json.dumps(out, ensure_ascii=False))
             r.success = True
             r.e2e_s = t_end - t0
             r.output_chars = len(text)
             r.chars_per_s = _rate(r.output_chars, r.e2e_s)
+            # 原文：輸入、輸出內容與完整原始回應（單純 JSON 服務無思考內容）
+            r.input_text = _payload_text(payload)
+            r.output_text = text
+            r.raw_response = json.dumps(obj, ensure_ascii=False)
         except (requests.RequestException, json.JSONDecodeError, ValueError) as exc:
             r.success = False
             r.error = f"{type(exc).__name__}: {exc}"
@@ -264,13 +298,18 @@ class VLMAdapter:
             r.status_code = resp.status_code
             resp.raise_for_status()
             t_end = time.perf_counter()
-            out = _dig(resp.json(), self.response_path)
+            obj = resp.json()
+            out = _dig(obj, self.response_path)
             text = "" if out is None else (out if isinstance(out, str)
                                            else json.dumps(out, ensure_ascii=False))
             r.success = True
             r.e2e_s = t_end - t0
             r.output_chars = len(text)
             r.chars_per_s = _rate(r.output_chars, r.e2e_s)
+            # 原文：輸入（圖片路徑）、輸出內容與完整原始回應
+            r.input_text = _payload_text(payload)
+            r.output_text = text
+            r.raw_response = json.dumps(obj, ensure_ascii=False)
         except (requests.RequestException, json.JSONDecodeError, ValueError, OSError) as exc:
             r.success = False
             r.error = f"{type(exc).__name__}: {exc}"
@@ -311,12 +350,14 @@ class CallableAdapter:
                     parts.append(str(piece))
                 t_end = time.perf_counter()
                 text = "".join(parts)
+                raw_obj = {"output": text}
                 if t_first is not None:
                     r.ttft_ms = (t_first - t0) * 1000.0
                     if n > 1 and t_last > t_first:
                         r.tpot_ms = (t_last - t_first) / (n - 1) * 1000.0
             else:
                 text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+                raw_obj = out
                 t_end = time.perf_counter()
             r.success = True
             r.status_code = 200
@@ -326,6 +367,10 @@ class CallableAdapter:
             if r.ttft_ms is not None and (r.e2e_s - r.ttft_ms / 1000.0) > 0:
                 decode_s = r.e2e_s - r.ttft_ms / 1000.0
             r.chars_per_s = _rate(r.output_chars, decode_s)
+            # 原文：輸入、輸出內容與完整原始回應（套件無獨立思考內容欄位）
+            r.input_text = _payload_text(payload)
+            r.output_text = text
+            r.raw_response = json.dumps(raw_obj, ensure_ascii=False)
         except Exception as exc:  # 套件呼叫可能拋任意例外
             r.success = False
             r.error = f"{type(exc).__name__}: {exc}"

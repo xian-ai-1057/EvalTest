@@ -20,7 +20,7 @@ from scenarios._common import make_inputs, output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
-from core.reporter import print_summary, write_csv
+from core.reporter import print_summary, write_outputs
 from core.runner import run_concurrent, run_single
 
 
@@ -46,7 +46,7 @@ def main():
                              run_label=cfg.RUN_LABEL, max_tokens=cfg.MAX_TOKENS,
                              temperature=cfg.TEMPERATURE, stream=False)
         summ = summarize(results)
-        path = write_csv(results, output_path(cfg, "s4_bert"))
+        csv_path, json_path = write_outputs(results, output_path(cfg, "s4_bert"))
         print_summary(summ)
         print("  即時(batch=1) 重點看單筆延遲 e2e。")
     else:
@@ -55,11 +55,12 @@ def main():
                                        max_tokens=cfg.MAX_TOKENS, temperature=cfg.TEMPERATURE,
                                        stream=False)
         summ = summarize(results, wall_seconds=wall)
-        path = write_csv(results, output_path(cfg, "s4_bert"))
+        csv_path, json_path = write_outputs(results, output_path(cfg, "s4_bert"))
         print_summary(summ)
         qps = (summ.success / wall) if wall > 0 else 0.0
         print(f"  批次吞吐量：{qps:,.1f} 筆/秒（QPS）｜整批 {wall:.2f}s")
-    print(f"明細 CSV：{path}")
+    print(f"明細 CSV：{csv_path}")
+    print(f"明細 JSON（含輸入/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

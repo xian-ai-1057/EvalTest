@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A self-made benchmarking harness to evaluate whether an **RTX PRO 6000 (Blackwell)** can replace **H100** inference/serving workloads. It fires requests at an inference endpoint, measures latency and throughput, and emits **per-request CSV detail + a console mean/percentile summary** to judge whether SLAs are met and locate bottlenecks. The reference scenarios come from `H100 vs PRO6000 通用測試情境表.xlsx`.
+A self-made benchmarking harness to evaluate whether an **RTX PRO 6000 (Blackwell)** can replace **H100** inference/serving workloads. It fires requests at an inference endpoint, measures latency and throughput, and emits **per-request CSV + JSON detail + a console mean/percentile summary** to judge whether SLAs are met and locate bottlenecks. The CSV/JSON also carry the original texts (`input_text`, `reasoning_text` 思考內容, `output_text`), and the JSON additionally keeps the full `raw_response`. The reference scenarios come from `H100 vs PRO6000 通用測試情境表.xlsx`.
 
 Code comments, docstrings, and user-facing console strings are written in **Traditional Chinese (繁體中文)**. Match that convention when editing.
 
@@ -47,7 +47,7 @@ To compare cards: point `BASE_URL`/`MODEL` at each endpoint, set a distinct `RUN
 
 The whole system pivots on **two contracts**; understand these before changing anything.
 
-1. **`RequestResult` (core/metrics.py)** — the single dataclass that flows through the entire pipeline (adapter → runner → metrics → reporter). **CSV column order == field declaration order** of this dataclass (reporter.py writes via `field_names()`), so adding/reordering fields changes the output schema.
+1. **`RequestResult` (core/metrics.py)** — the single dataclass that flows through the entire pipeline (adapter → runner → metrics → reporter). **CSV column order == field declaration order** of this dataclass (reporter.py writes via `field_names()`), so adding/reordering fields changes the output schema. One exception: fields tagged `metadata={"csv": False}` (currently only `raw_response`, the full original response) are skipped by `field_names()` and live **only in the JSON detail** — adapters set `input_text`/`reasoning_text`/`output_text`/`raw_response` for human inspection; these are not used in any metric. `write_outputs()` emits the sibling CSV + JSON together (scenarios call it, not `write_csv` directly).
 
 2. **The adapter `call()` contract (core/client.py)** — every adapter implements exactly:
    ```python

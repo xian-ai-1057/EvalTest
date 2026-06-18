@@ -11,7 +11,12 @@ from typing import Optional
 
 @dataclass
 class RequestResult:
-    """單一請求的量測結果。欄位順序即 CSV 欄位順序。"""
+    """單一請求的量測結果。欄位宣告順序即 CSV 欄位順序。
+
+    除了量測數值，亦保留「原文」供人工檢視：input_text（輸入原文）、reasoning_text
+    （思考內容 / reasoning_content，無則空）、output_text（輸出內容）會寫進 CSV；
+    raw_response（完整原始回應 JSON 字串）因內容過長，標記 csv=False，只寫進 JSON 明細檔。
+    """
     scenario: str = ""
     run_label: str = ""
     index: int = 0
@@ -27,10 +32,21 @@ class RequestResult:
     tokens_per_s: Optional[float] = None  # 單請求輸出速率（依解碼階段算，見 client）
     chars_per_s: Optional[float] = None
     error: str = ""
+    # --- 原文（供人工檢視；前三者進 CSV，raw_response 只進 JSON 明細）---
+    input_text: str = ""                 # 輸入原文
+    reasoning_text: str = ""             # 思考內容（reasoning_content；不適用 / 無則空）
+    output_text: str = ""                # 輸出內容（最終回覆文字）
+    raw_response: str = field(default="", metadata={"csv": False})  # 完整原始回應（JSON 字串）
 
 
-def field_names() -> list:
-    return [f.name for f in fields(RequestResult)]
+def field_names(include_raw: bool = False) -> list:
+    """回傳 CSV 欄位名（依宣告順序）。
+
+    預設略過標記 metadata={"csv": False} 的欄位（如完整原始回應 raw_response）——這類超長
+    欄位只寫進 JSON 明細檔，避免 CSV 難以閱讀。include_raw=True 則回傳全部欄位。
+    """
+    return [f.name for f in fields(RequestResult)
+            if include_raw or f.metadata.get("csv", True)]
 
 
 def _percentile(values: list, q: float):

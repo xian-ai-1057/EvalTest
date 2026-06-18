@@ -1,7 +1,12 @@
-"""輸出：每筆明細寫 CSV、主控台印平均/百分位摘要。"""
+"""輸出：每筆明細寫 CSV + JSON、主控台印平均/百分位摘要。
+
+CSV 走 field_names()（略過超長的 raw_response），保留可快速檢視的數值與原文欄位；
+JSON 明細則完整保存每筆所有欄位，含 raw_response（完整原始回應）。
+"""
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,7 +14,7 @@ from core.metrics import Summary, field_names
 
 
 def write_csv(results: list, path: str) -> str:
-    """把每一筆 RequestResult 寫成 CSV（欄位＝RequestResult 欄位）。回傳實際路徑。"""
+    """把每一筆 RequestResult 寫成 CSV（欄位＝field_names()，含輸入/思考/輸出原文）。回傳實際路徑。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     cols = field_names()
@@ -20,6 +25,39 @@ def write_csv(results: list, path: str) -> str:
             row = asdict(r)
             writer.writerow({k: ("" if row[k] is None else row[k]) for k in cols})
     return str(p)
+
+
+def write_json(results: list, path: str) -> str:
+    """把每一筆 RequestResult 寫成 JSON 明細（含完整原始回應 raw_response）。回傳實際路徑。
+
+    raw_response 會試著還原成巢狀 JSON 物件，便於檢視思考/輸出/usage 等；無法解析則保留原字串。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    records = []
+    for r in results:
+        row = asdict(r)
+        raw = row.get("raw_response")
+        if raw:
+            try:
+                row["raw_response"] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass  # 無法解析就保留原字串
+        records.append(row)
+    with p.open("w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+    return str(p)
+
+
+def write_outputs(results: list, csv_path: str):
+    """同時輸出 CSV 明細與 JSON 明細（JSON 為 CSV 同名改 .json）。回傳 (csv_path, json_path)。
+
+    情境腳本統一呼叫這支：CSV 供快速檢視（含輸入/思考內容/輸出內容原文），
+    JSON 供保存完整原始回應（raw_response）。
+    """
+    csv_out = write_csv(results, csv_path)
+    json_out = write_json(results, str(Path(csv_path).with_suffix(".json")))
+    return csv_out, json_out
 
 
 def _fmt(v, nd=2):

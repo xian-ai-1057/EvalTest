@@ -16,7 +16,7 @@ EvalTest/
 │   ├── custom_adapter_example.py# 自訂服務 adapter 範本（對號入座）
 │   ├── runner.py                # run_single / run_concurrent（ThreadPoolExecutor，可選 Poisson）
 │   ├── metrics.py               # RequestResult + summarize()
-│   ├── reporter.py              # write_csv() + print_summary()
+│   ├── reporter.py              # write_csv() / write_json() / write_outputs() + print_summary()
 │   └── gpu.py                   # GpuSampler（背景 nvidia-smi 取樣）
 ├── scenarios/
 │   ├── s1_interactive.py / s2_concurrency.py / s3_batch.py / s4_bert.py / s6_stt.py
@@ -27,7 +27,10 @@ EvalTest/
 ## 模組介面契約（串接的接縫）
 1. **資料契約 `RequestResult`（metrics.py，dataclass）** — 全鏈路流通的唯一單筆資料：
    `scenario, run_label, index, ts, concurrency, success, status_code, ttft_ms, tpot_ms,
-    e2e_s, output_tokens, output_chars, tokens_per_s, chars_per_s, error`
+    e2e_s, output_tokens, output_chars, tokens_per_s, chars_per_s, error`；
+   另含原文（供人工檢視、不參與統計）：`input_text`（輸入原文）、`reasoning_text`（思考內容
+   reasoning_content）、`output_text`（輸出內容）寫進 CSV；`raw_response`（完整原始回應 JSON 字串、
+   標記 csv=False）只寫進 JSON 明細。
 2. **呼叫契約 `Adapter`（client.py）** — 所有 adapter 一致實作：
    `call(payload, *, max_tokens, temperature, stream) -> RequestResult`
    runner 只依賴此協定，不認識底層 HTTP。`make_adapter(config)` 依 `ADAPTER` 名稱選用
@@ -37,7 +40,9 @@ EvalTest/
    `run_concurrent(adapter, inputs, concurrency, arrival, **kw) -> (list[RequestResult], wall_seconds)`
 4. **彙總契約（metrics.py）**：`summarize(results) -> Summary`
    （count、success_rate、各延遲 mean/p50/p90/p95/p99、總吞吐＝Σtokens÷wall、平均 tokens/s 與 chars/s）
-5. **輸出契約（reporter.py）**：`write_csv(results, path)`、`print_summary(summary, gpu_stats=None)`
+5. **輸出契約（reporter.py）**：`write_outputs(results, csv_path) -> (csv_path, json_path)`
+   （內部呼叫 `write_csv` 寫可讀明細 + `write_json` 寫含 `raw_response` 的完整明細）、
+   `print_summary(summary, gpu_stats=None)`
 6. **GPU 契約（gpu.py）**：`GpuSampler(interval).start()`；`.stop() -> GpuStats|None`（util/mem 的 mean/max；無 nvidia-smi → None）
 7. **設定契約（config.py）**：`Config` 提供
    `ADAPTER, BASE_URL, API_KEY, MODEL, RUN_LABEL, REQUEST_TIMEOUT, INPUT_LEN, MAX_TOKENS, TEMPERATURE,
@@ -50,6 +55,9 @@ SSE 逐行解析：送出前記 `t0` → 首個內容 chunk = **TTFT**；累積�
 `TPOT=(末token−首token)/(n−1)`、`e2e=結束−t0`；輸出量優先取末包 `usage`
 （送 `stream_options.include_usage=true`），無則以 chunk 數 / 字元數回退；同時記 `output_chars`
 對應 Excel 的「每秒字數、毫秒/字」。
+另一併擷取原文：`delta.content` 累積為 `output_text`、`delta.reasoning_content`（相容 `reasoning`）
+累積為 `reasoning_text`、輸入存 `input_text`、整段串流原始 chunk 存 `raw_response`；非串流則取
+`message.content` / `message.reasoning_content` 與整個回應物件。輸出量（tokens/chars）仍只計最終內容。
 
 ## 接入既有服務（三種接法，對應 FR9）
 唯一接縫在 **adapter**；以下三者 runner / metrics / reporter / 情境腳本完全不變：

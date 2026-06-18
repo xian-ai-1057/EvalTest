@@ -8,6 +8,7 @@ runner / metrics / reporter / 情境腳本一行都不用動。
 """
 from __future__ import annotations
 
+import json
 import time
 
 import requests
@@ -42,7 +43,8 @@ class CustomAdapter:
 
             # TODO(3): 依你服務的回應取出輸出文字；若為串流，於收到首個 chunk 時記 TTFT：
             #   first = time.perf_counter(); r.ttft_ms = (first - t0) * 1000
-            text = resp.json().get("output", "")
+            obj = resp.json()
+            text = obj.get("output", "")
 
             t_end = time.perf_counter()
             r.success = True
@@ -50,6 +52,11 @@ class CustomAdapter:
             r.output_chars = len(text)
             if r.e2e_s and r.e2e_s > 0:
                 r.chars_per_s = r.output_chars / r.e2e_s
+            # 原文（供人工檢視；前三者進 CSV，raw_response 只進 JSON 明細）：
+            r.input_text = str(payload)
+            r.reasoning_text = obj.get("reasoning_content", "")  # 若你的服務有「思考內容」欄位
+            r.output_text = text
+            r.raw_response = json.dumps(obj, ensure_ascii=False)
         except (requests.RequestException, ValueError) as exc:
             r.success = False
             r.error = f"{type(exc).__name__}: {exc}"
