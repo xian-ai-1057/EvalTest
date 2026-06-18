@@ -73,7 +73,9 @@ class OpenAIChatAdapter:
                 self._call_stream(payload, max_tokens, temperature, t0, r)
             else:
                 self._call_once(payload, max_tokens, temperature, t0, r)
-        except requests.RequestException as exc:
+        # 連線錯誤、HTTP 4xx/5xx，以及回應非 JSON（json.JSONDecodeError 屬 ValueError）皆記為失敗，
+        # 保住已填的 status_code，與其他 adapter 一致，不讓單筆拖垮整批。
+        except (requests.RequestException, ValueError) as exc:
             r.success = False
             r.error = f"{type(exc).__name__}: {exc}"
         return r
@@ -134,7 +136,9 @@ class OpenAIChatAdapter:
         text = "".join(text_parts)
         r.success = True
         r.e2e_s = t_end - t0
-        # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數優先取 usage（含 reasoning）
+        # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數優先取 usage（含 reasoning）。
+        # 後端未回 usage 時退化為「有內容的 SSE chunk 數」當代理值——chunk 數 ≠ token 數，
+        # 此時 tokens_per_s 與系統總吞吐都是近似值，跨後端比較請以有回 usage 者為準。
         r.output_chars = len(reasoning) + len(text)
         r.output_tokens = usage_tokens if usage_tokens is not None else n_chunks
         # 原文：輸入、思考內容、輸出內容，以及完整串流原始回應（所有 chunk）
@@ -145,6 +149,8 @@ class OpenAIChatAdapter:
         if t_first is not None:
             r.ttft_ms = (t_first - t0) * 1000.0
             if n_chunks > 1 and t_last > t_first:
+                # 實為「逐 chunk 延遲」；多數 OpenAI 相容後端為 1 token/chunk，故近似逐字延遲，
+                # 若後端單 chunk 含多 token 則 TPOT 會偏高。
                 r.tpot_ms = (t_last - t_first) / (n_chunks - 1) * 1000.0
         # 單請求輸出速率：以解碼階段（扣掉首字延遲）計算，對應 AC2
         decode_s = None

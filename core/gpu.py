@@ -18,6 +18,7 @@ _QUERY = [
     "--format=csv,noheader,nounits",
     "-i", "0",
 ]
+_SAMPLE_TIMEOUT = 5.0       # 單次 nvidia-smi 最久等待秒數（join 須涵蓋這個最壞情況）
 
 
 @dataclass
@@ -42,7 +43,7 @@ class GpuSampler:
 
     def _sample_once(self):
         try:
-            out = subprocess.run(_QUERY, capture_output=True, text=True, timeout=5)
+            out = subprocess.run(_QUERY, capture_output=True, text=True, timeout=_SAMPLE_TIMEOUT)
             line = out.stdout.strip().splitlines()
             if not line:
                 return
@@ -68,7 +69,8 @@ class GpuSampler:
         if not self.available or self._thread is None:
             return None
         self._stop.set()
-        self._thread.join(timeout=self.interval + 2)
+        # join 須涵蓋「正卡在一次取樣」的最壞情況：取樣間隔 + 單次 nvidia-smi 上限 + 緩衝
+        self._thread.join(timeout=self.interval + _SAMPLE_TIMEOUT + 1.0)
         if not self._util:
             return GpuStats(samples=0)
         return GpuStats(

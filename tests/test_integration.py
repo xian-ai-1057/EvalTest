@@ -30,6 +30,7 @@ def main():
     httpd, port = start_in_thread(0)
     base = f"http://127.0.0.1:{port}"
     print(f"mock server @ {base}")
+    img_path = None      # VLM 測試用暫存圖；於 finally 清除
     try:
         adapter = OpenAIChatAdapter(base_url=base, model="mock", timeout=30)
 
@@ -113,6 +114,26 @@ def main():
         _check(summ.throughput_tokens_per_s and summ.throughput_tokens_per_s > 0, "可算系統總吞吐")
         print_summary(summ)
 
+        # --- 失敗路徑：adapter 拋例外時，單筆記為 failed、不得中斷整批，且能彙總/輸出 ---
+        print("[失敗路徑] adapter 例外 → 記為 failed、runner 不崩潰、其餘照常、可彙總可輸出")
+
+        class _RaisingAdapter:
+            def call(self, payload, *, max_tokens=256, temperature=0.0, stream=True):
+                raise RuntimeError("boom")
+
+        fres, fwall = run_concurrent(_RaisingAdapter(), ["x"] * 5, concurrency=3,
+                                     scenario="it_fail", run_label="MOCK")
+        _check(len(fres) == 5 and all(not r.success for r in fres),
+               "5 筆全部記為 failed（runner 未崩潰、無 None 洞）")
+        _check(all(r.error for r in fres), "每筆 failed 都帶 error 訊息")
+        fsumm = summarize(fres, wall_seconds=fwall)
+        _check(fsumm.failed == 5 and fsumm.success == 0, "彙總：failed=5、success=0")
+        # 成功＋失敗混在一起仍能輸出 CSV+JSON（驗證 reporter 對 failed 結果穩健）
+        mixed = list(cres) + list(fres)
+        mcsv, mjson = write_outputs(mixed, os.path.join(_tmp.mkdtemp(), "it_mixed_MOCK.csv"))
+        _check(os.path.exists(mcsv) and os.path.exists(mjson),
+               "成功＋失敗混合結果仍能輸出 CSV+JSON")
+
         # --- GenericJSONAdapter（FR8/AC6）---
         print("[通用] GenericJSONAdapter -> /predict")
         gen = GenericJSONAdapter(url=f"{base}/predict",
@@ -186,6 +207,11 @@ def main():
         print("\n全部整合檢查通過 ✅")
     finally:
         httpd.shutdown()
+        if img_path:
+            try:
+                os.unlink(img_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
