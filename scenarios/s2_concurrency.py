@@ -16,7 +16,7 @@ from config import Config
 from core.client import make_adapter
 from core.gpu import GpuSampler
 from core.metrics import summarize
-from core.reporter import print_summary, write_csv
+from core.reporter import print_summary, write_outputs
 from core.runner import run_concurrent
 
 
@@ -79,7 +79,7 @@ def main():
         all_results.extend(results)
         per_level.append((level, summ))
 
-    path = write_csv(all_results, output_path(cfg, "s2_concurrency"))
+    csv_path, json_path = write_outputs(all_results, output_path(cfg, "s2_concurrency"))
 
     # 跨級別總表 + SLA 下最大併發
     print("\n併發掃描總表（依 SLA 判定達標）")
@@ -96,7 +96,8 @@ def main():
         print(f"{level:>6} {summ.success_rate*100:>6.1f}% {ttft:>13} {e2e:>11} {thr:>14} "
               f"{'✓' if ok else '✗':>5}")
     print(f"\nSLA 下最大可承載併發：{max_ok if max_ok is not None else '無（最低併發即超標）'}")
-    print(f"明細 CSV：{path}")
+    print(f"明細 CSV：{csv_path}")
+    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

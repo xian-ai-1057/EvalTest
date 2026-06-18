@@ -22,7 +22,7 @@ from scenarios._common import output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
-from core.reporter import print_summary, write_csv
+from core.reporter import print_summary, write_outputs
 from core.runner import run_concurrent, run_single
 
 
@@ -53,7 +53,7 @@ def main():
                                        max_tokens=cfg.MAX_TOKENS, temperature=cfg.TEMPERATURE,
                                        stream=False)
     summ = summarize(results, wall_seconds=wall)
-    path = write_csv(results, output_path(cfg, "s6_stt"))
+    csv_path, json_path = write_outputs(results, output_path(cfg, "s6_stt"))
     print_summary(summ)
 
     # 即時率：以端到端處理時間 ÷ 音檔長度
@@ -63,7 +63,8 @@ def main():
         rtf_max = max(e2e_vals) / args.audio_seconds
         print(f"  即時率 RTF：mean={rtf_mean:.3f} max={rtf_max:.3f}（< 1 表示可即時）")
         print(f"  測試並發路數：{args.concurrency}（可逐步加大以找單卡可服務路數）")
-    print(f"明細 CSV：{path}")
+    print(f"明細 CSV：{csv_path}")
+    print(f"明細 JSON（含輸入/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

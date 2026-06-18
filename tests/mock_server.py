@@ -1,7 +1,8 @@
 """假 OpenAI 相容伺服器（純標準庫），供無 GPU 時做端到端驗證。
 
 支援：
-  POST /v1/chat/completions  —— stream=true 時以 SSE 逐 token 串流（含末包 usage）；否則回單一 JSON。
+  POST /v1/chat/completions  —— stream=true 時以 SSE 逐 token 串流（先吐 reasoning_content 思考內容、
+                                再吐 content，含末包 usage）；否則回單一 JSON（含 reasoning_content）。
   POST /predict              —— 給 GenericJSONAdapter 測試用，回 {"output": "..."}。
 
 可獨立執行：  python tests/mock_server.py --port 8000
@@ -20,11 +21,17 @@ TTFT_DELAY = 0.05    # 首字前延遲（秒）
 TPOT_DELAY = 0.01    # 每個 token 間延遲（秒）
 
 _WORDS = "這 是 一 段 測 試 用 的 模 擬 回 應 內 容 ".split()
+_REASON_WORDS = "讓 我 想 一 下 這 題 怎 麼 答 ".split()
 
 
 def _gen_tokens(max_tokens: int) -> list:
     n = max(1, min(max_tokens, 64))
     return [_WORDS[i % len(_WORDS)] for i in range(n)]
+
+
+def _gen_reasoning(n: int = 4) -> list:
+    """模擬「思考內容」（reasoning_content）的逐塊輸出，讓鏈路可驗證原文擷取。"""
+    return [_REASON_WORDS[i % len(_REASON_WORDS)] for i in range(max(0, n))]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -54,15 +61,22 @@ class Handler(BaseHTTPRequestHandler):
         stream = bool(body.get("stream", False))
         want_usage = bool((body.get("stream_options") or {}).get("include_usage"))
         tokens = _gen_tokens(max_tokens)
+        # 以 model 名稱切換是否模擬推理模型：含 "plain" 視為無思考內容的一般模型
+        with_reasoning = "plain" not in str(body.get("model", "")).lower()
+        reason_tokens = _gen_reasoning() if with_reasoning else []
+        # completion_tokens 含思考內容 token（模擬 vLLM 等推理模型的計數方式）
+        n_comp = len(reason_tokens) + len(tokens)
 
         if not stream:
             text = "".join(tokens)
+            message = {"role": "assistant", "content": text}
+            if reason_tokens:                       # 一般模型不帶 reasoning_content 欄位
+                message["reasoning_content"] = "".join(reason_tokens)
             payload = {
                 "id": "mock-1", "object": "chat.completion",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                             "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 8, "completion_tokens": len(tokens),
-                          "total_tokens": 8 + len(tokens)},
+                "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": n_comp,
+                          "total_tokens": 8 + n_comp},
             }
             data = json.dumps(payload).encode("utf-8")
             self.send_response(200)
@@ -85,6 +99,12 @@ class Handler(BaseHTTPRequestHandler):
         # 首包：角色
         send({"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
         time.sleep(TTFT_DELAY)
+        # 思考內容（reasoning_content）先於正式內容串出，模擬推理模型
+        for i, rtok in enumerate(reason_tokens):
+            if i > 0:
+                time.sleep(TPOT_DELAY)
+            send({"choices": [{"index": 0, "delta": {"reasoning_content": rtok},
+                               "finish_reason": None}]})
         for i, tok in enumerate(tokens):
             if i > 0:
                 time.sleep(TPOT_DELAY)
@@ -93,8 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         send({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         if want_usage:
             send({"choices": [], "usage": {"prompt_tokens": 8,
-                                           "completion_tokens": len(tokens),
-                                           "total_tokens": 8 + len(tokens)}})
+                                           "completion_tokens": n_comp,
+                                           "total_tokens": 8 + n_comp}})
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 

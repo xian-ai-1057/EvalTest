@@ -15,7 +15,7 @@ from scenarios._common import load_dataset_inputs, make_inputs, output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
-from core.reporter import print_summary, write_csv
+from core.reporter import print_summary, write_outputs
 from core.runner import run_single
 
 
@@ -48,9 +48,10 @@ def main():
     results = run_single(adapter, inputs, scenario="s1_interactive",
                          run_label=cfg.RUN_LABEL, max_tokens=args.max_tokens,
                          temperature=cfg.TEMPERATURE, stream=stream)
-    path = write_csv(results, output_path(cfg, "s1_interactive"))
+    csv_path, json_path = write_outputs(results, output_path(cfg, "s1_interactive"))
     print_summary(summarize(results))
-    print(f"明細 CSV：{path}")
+    print(f"明細 CSV：{csv_path}")
+    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

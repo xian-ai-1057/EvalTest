@@ -15,7 +15,7 @@ from scenarios._common import load_dataset_inputs, make_inputs, output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
-from core.reporter import print_summary, write_csv
+from core.reporter import print_summary, write_outputs
 from core.runner import run_concurrent
 
 
@@ -49,7 +49,7 @@ def main():
                                    max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE,
                                    stream=True)
     summ = summarize(results, wall_seconds=wall)
-    path = write_csv(results, output_path(cfg, "s3_batch"))
+    csv_path, json_path = write_outputs(results, output_path(cfg, "s3_batch"))
     print_summary(summ)
 
     items_per_hour = (summ.success / wall * 3600.0) if wall > 0 else 0.0
@@ -57,7 +57,8 @@ def main():
     print(f"  批次吞吐量：{items_per_hour:,.0f} 筆/小時")
     print(f"  整批完成時間：{wall:.2f}s（成功 {summ.success}/{summ.count} 筆）")
     print(f"  單筆延遲 p95：{per_item_p95}（門檻：單筆 ≤ 1 秒；整批對 D+1 由業務判定）")
-    print(f"明細 CSV：{path}")
+    print(f"明細 CSV：{csv_path}")
+    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

@@ -62,8 +62,20 @@ python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 
 > ④BERT、⑥STT、VLM 走不同輸入型態（序列長度／音檔／圖片資料夾），不吃 `--dataset`。
 
 ## 輸出
-- 每筆明細：`results/<情境>_<標籤>_<時間>.csv`（欄位含 TTFT/TPOT/e2e/tokens/併發/標籤…）
+每次執行同時產生兩份明細（同檔名、不同副檔名）＋主控台摘要：
+- 每筆明細 **CSV**：`results/<情境>_<標籤>_<時間>.csv`
+  欄位含 TTFT/TPOT/e2e/tokens/字數/併發/標籤…，以及**原文**：`input_text`（輸入原文）、
+  `reasoning_text`（思考內容）、`output_text`（輸出內容），方便用試算表快速檢視。
+- 每筆明細 **JSON**：`results/<情境>_<標籤>_<時間>.json`
+  保存每筆所有欄位，並額外含 `raw_response`（**完整原始回應**：串流為所有 chunk 清單、非串流為回應物件）。
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
+
+> 思考內容（reasoning）：串流取 `delta.reasoning_content`（相容 `reasoning`）、非串流取
+> `message.reasoning_content`（相容 `reasoning`）；模型無此欄位則 `reasoning_text` 留空。
+> 推理模型的 reasoning 與 content 都算「已生成輸出」：**TTFT 取第一個 token（不分思考/內容）**，
+> TPOT、`tokens_per_s`、`chars_per_s` 與 `output_tokens`/`output_chars` 皆涵蓋兩者，與
+> `usage.completion_tokens`（含 reasoning）一致，避免推理模型的吞吐被灌水。
+> 其中 `output_text` 只放最終回覆、`output_chars` 則為「思考＋內容」字數合計；原文字串本身僅供檢視、不另參與計算。
 
 ## 接入既有服務（測試你自己的程式）
 **唯一接縫在 adapter**：`runner` / `metrics` / `reporter` / 情境腳本完全不用改。
@@ -137,7 +149,7 @@ core/
   custom_adapter_example.py
   runner.py            # run_single / run_concurrent（ThreadPoolExecutor）
   metrics.py           # RequestResult + summarize()
-  reporter.py          # write_csv() + print_summary()
+  reporter.py          # write_csv() / write_json() / write_outputs() + print_summary()
   gpu.py               # GpuSampler（背景 nvidia-smi）
 scenarios/             # s1_interactive / s2_concurrency / s3_batch / s4_bert / s6_stt
 tests/                 # mock_server.py（假 OpenAI SSE）+ test_integration.py
