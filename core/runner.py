@@ -6,9 +6,15 @@ concurrency（量測欄位由 adapter 填）。並發採 ThreadPoolExecutor，�
 from __future__ import annotations
 
 import random
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from core.metrics import RequestResult
+
+
+def _failed(exc) -> RequestResult:
+    """把未預期的例外包成一筆 failed 結果，避免單筆拖垮整批。"""
+    return RequestResult(success=False, error=f"{type(exc).__name__}: {exc}")
 
 
 def _stamp(r, scenario, run_label, index, concurrency):
@@ -24,7 +30,10 @@ def run_single(adapter, inputs, *, scenario="", run_label="",
     """併發=1，序列逐筆執行。回傳 list[RequestResult]。"""
     results = []
     for i, inp in enumerate(inputs):
-        r = adapter.call(inp, max_tokens=max_tokens, temperature=temperature, stream=stream)
+        try:
+            r = adapter.call(inp, max_tokens=max_tokens, temperature=temperature, stream=stream)
+        except Exception as exc:        # adapter 未攔下的例外不應中斷整批
+            r = _failed(exc)
         results.append(_stamp(r, scenario, run_label, i, 1))
     return results
 
@@ -59,7 +68,10 @@ def run_concurrent(adapter, inputs, concurrency, *, scenario="", run_label="",
 
         for fut in as_completed(futures):
             i = futures[fut]
-            r = fut.result()
+            try:
+                r = fut.result()
+            except Exception as exc:    # 單筆例外記為 failed，保住其餘結果
+                r = _failed(exc)
             results[i] = _stamp(r, scenario, run_label, i, concurrency)
 
     wall_seconds = time.perf_counter() - wall_start

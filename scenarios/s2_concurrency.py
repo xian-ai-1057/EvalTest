@@ -32,9 +32,11 @@ def _parse_levels(text, default):
 
 
 def _meets_sla(summ, sla_ttft_ms, sla_p95_ms):
-    ttft_ok = (summ.ttft_ms.p95 is None) or (summ.ttft_ms.p95 <= sla_ttft_ms)
+    # TTFT 必須「有值且未超標」才算過；量不到 TTFT（None）視為未達標，避免假性通過
+    # （總表會把 TTFT p95 印成「—」，使其不可得一目了然）。
+    ttft_ok = (summ.ttft_ms.p95 is not None) and (summ.ttft_ms.p95 <= sla_ttft_ms)
     e2e_p95_ms = None if summ.e2e_s.p95 is None else summ.e2e_s.p95 * 1000.0
-    e2e_ok = (e2e_p95_ms is None) or (e2e_p95_ms <= sla_p95_ms)
+    e2e_ok = (e2e_p95_ms is not None) and (e2e_p95_ms <= sla_p95_ms)
     return ttft_ok and e2e_ok and summ.failed == 0
 
 
