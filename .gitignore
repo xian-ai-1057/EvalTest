@@ -1,0 +1,12 @@
+# 本機設定（含端點/金鑰），不進版控
+.env
+
+# 測試輸出
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
