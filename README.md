@@ -48,6 +48,19 @@ python tests/test_integration.py
 > 比較 H100 vs PRO 6000：把 `BASE_URL`/`MODEL` 指向各自端點，`RUN_LABEL` 標好（如 `H100-FP8`、`PRO6000-FP4`），
 > 各跑一輪，再並排比較產出的 CSV 與摘要。
 
+### 用自己的測試資料集當輸入（`--dataset`）
+情境 ①②③ 預設用「固定字元長度的合成 prompt」（比較時輸入長度一致、可控）。
+若要改用自己的題庫，加 `--dataset <檔案>`：
+- `.csv`：取 `prompt` 欄（找不到欄名 prompt/input/text… 就取第一欄；可含 `id,prompt,...` 多欄，其餘欄忽略）。相容 Excel 匯出的 BOM。
+- `.txt`：一行一個 prompt（略過空白行）。
+
+`--n` 仍決定總筆數：資料集不足會循環補滿、過多會截斷（語意同圖片的 `--images`）；給了 `--dataset` 時 `--input-len` 失效。
+```bash
+python scenarios/s1_interactive.py --dataset data/prompts.sample.txt --n 20 --label H100-FP8
+python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 --n 50
+```
+> ④BERT、⑥STT、VLM 走不同輸入型態（序列長度／音檔／圖片資料夾），不吃 `--dataset`。
+
 ## 輸出
 - 每筆明細：`results/<情境>_<標籤>_<時間>.csv`（欄位含 TTFT/TPOT/e2e/tokens/併發/標籤…）
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。

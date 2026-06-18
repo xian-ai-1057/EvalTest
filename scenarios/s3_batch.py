@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import make_inputs, output_path
+from scenarios._common import load_dataset_inputs, make_inputs, output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
@@ -24,15 +24,24 @@ def main():
     ap = argparse.ArgumentParser(description="情境③ LLM 批次推論（離線吞吐）")
     ap.add_argument("--n", type=int, default=max(cfg.N_REQUESTS, 200), help="批次總筆數")
     ap.add_argument("--concurrency", type=int, default=32, help="批次並發度（盡量拉高）")
-    ap.add_argument("--input-len", type=int, default=2000, help="單筆輸入字元數（脫敏約 2000 字/筆）")
+    ap.add_argument("--input-len", type=int, default=2000,
+                    help="單筆合成輸入字元數（脫敏約 2000 字/筆；給 --dataset 時忽略）")
     ap.add_argument("--max-tokens", type=int, default=cfg.MAX_TOKENS)
     ap.add_argument("--label", default=cfg.RUN_LABEL)
+    ap.add_argument("--dataset", default="",
+                    help="從檔案讀 prompt 當輸入（.csv 取 prompt 欄/第一欄；.txt 一行一個）。"
+                         "給了就覆蓋合成輸入；不足 --n 會循環補滿")
     args = ap.parse_args()
     cfg.RUN_LABEL = args.label
 
     adapter = make_adapter(cfg)
-    inputs = make_inputs(args.n, args.input_len)
-    print(f"情境③ 批次推論 | n={args.n} 並發={args.concurrency} 輸入長度={args.input_len} "
+    if args.dataset:
+        inputs = load_dataset_inputs(args.dataset, args.n)
+        src = f"資料集={args.dataset}"
+    else:
+        inputs = make_inputs(args.n, args.input_len)
+        src = f"輸入長度={args.input_len}"
+    print(f"情境③ 批次推論 | n={len(inputs)} 並發={args.concurrency} {src} "
           f"max_tokens={args.max_tokens} 標籤={cfg.RUN_LABEL}")
 
     results, wall = run_concurrent(adapter, inputs, args.concurrency,
