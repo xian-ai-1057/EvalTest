@@ -45,16 +45,18 @@ class CustomAdapter:
             #   first = time.perf_counter(); r.ttft_ms = (first - t0) * 1000
             obj = resp.json()
             text = obj.get("output", "")
+            reasoning = obj.get("reasoning_content", "")  # 若你的服務有「思考內容」欄位
 
             t_end = time.perf_counter()
             r.success = True
             r.e2e_s = t_end - t0
-            r.output_chars = len(text)
+            # 思考內容與正式內容都算「已生成輸出」：字數合計（與 OpenAI adapter 一致）
+            r.output_chars = len(reasoning) + len(text)
             if r.e2e_s and r.e2e_s > 0:
                 r.chars_per_s = r.output_chars / r.e2e_s
             # 原文（供人工檢視；前三者進 CSV，raw_response 只進 JSON 明細）：
             r.input_text = str(payload)
-            r.reasoning_text = obj.get("reasoning_content", "")  # 若你的服務有「思考內容」欄位
+            r.reasoning_text = reasoning
             r.output_text = text
             r.raw_response = json.dumps(obj, ensure_ascii=False)
         except (requests.RequestException, ValueError) as exc:

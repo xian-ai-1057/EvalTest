@@ -71,8 +71,11 @@ python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
 
 > 思考內容（reasoning）：串流取 `delta.reasoning_content`（相容 `reasoning`）、非串流取
-> `message.reasoning_content`；模型無此欄位則留空。輸出量（output_tokens/chars）仍以最終回覆內容計。
-> 原文（CSV 體積會變大）僅供人工檢視，不影響任何延遲/吞吐統計。
+> `message.reasoning_content`（相容 `reasoning`）；模型無此欄位則 `reasoning_text` 留空。
+> 推理模型的 reasoning 與 content 都算「已生成輸出」：**TTFT 取第一個 token（不分思考/內容）**，
+> TPOT、`tokens_per_s`、`chars_per_s` 與 `output_tokens`/`output_chars` 皆涵蓋兩者，與
+> `usage.completion_tokens`（含 reasoning）一致，避免推理模型的吞吐被灌水。
+> 其中 `output_text` 只放最終回覆、`output_chars` 則為「思考＋內容」字數合計；原文字串本身僅供檢視、不另參與計算。
 
 ## 接入既有服務（測試你自己的程式）
 **唯一接縫在 adapter**：`runner` / `metrics` / `reporter` / 情境腳本完全不用改。

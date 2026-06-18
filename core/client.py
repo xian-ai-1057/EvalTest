@@ -112,30 +112,34 @@ class OpenAIChatAdapter:
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
-                # 思考內容：相容 reasoning_content（DeepSeek / vLLM）與 reasoning 兩種欄名
+                # 思考內容（reasoning_content / reasoning）與正式內容皆視為「已生成輸出」：
+                # 任一種 token 都計入首字時間 / 逐字延遲 / token 數，使吞吐與 usage（含 reasoning）一致。
                 reason_piece = delta.get("reasoning_content")
                 if reason_piece is None:
                     reason_piece = delta.get("reasoning")
+                piece = delta.get("content")
                 if reason_piece:
                     reason_parts.append(reason_piece)
-                piece = delta.get("content")
                 if piece:
+                    text_parts.append(piece)
+                if reason_piece or piece:
                     now = time.perf_counter()
                     if t_first is None:
                         t_first = now
                     t_last = now
                     n_chunks += 1
-                    text_parts.append(piece)
         t_end = time.perf_counter()
 
+        reasoning = "".join(reason_parts)
         text = "".join(text_parts)
         r.success = True
         r.e2e_s = t_end - t0
-        r.output_chars = len(text)
+        # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數優先取 usage（含 reasoning）
+        r.output_chars = len(reasoning) + len(text)
         r.output_tokens = usage_tokens if usage_tokens is not None else n_chunks
         # 原文：輸入、思考內容、輸出內容，以及完整串流原始回應（所有 chunk）
         r.input_text = _payload_text(payload)
-        r.reasoning_text = "".join(reason_parts)
+        r.reasoning_text = reasoning
         r.output_text = text
         r.raw_response = json.dumps(raw_chunks, ensure_ascii=False)
         if t_first is not None:
@@ -167,7 +171,8 @@ class OpenAIChatAdapter:
         usage = obj.get("usage") or {}
         r.success = True
         r.e2e_s = t_end - t0
-        r.output_chars = len(text)
+        # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數取 usage（含 reasoning）
+        r.output_chars = len(reasoning) + len(text)
         r.output_tokens = usage.get("completion_tokens")
         # 非串流無法量首字/逐字延遲
         r.tokens_per_s = _rate(r.output_tokens, r.e2e_s)

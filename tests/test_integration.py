@@ -53,12 +53,31 @@ def main():
         print("[原文] 擷取輸入、思考內容、輸出內容與完整 JSON")
         import json as _json
         _check(bool(r0.input_text), "擷取到輸入原文 input_text")
-        _check(bool(r0.output_text) and r0.output_chars == len(r0.output_text),
-               "擷取到輸出內容 output_text（字數與 output_chars 一致）")
+        _check(bool(r0.output_text) and r0.output_chars == len(r0.reasoning_text) + len(r0.output_text),
+               "擷取到輸出內容 output_text（output_chars = 思考+內容字數）")
         _check(bool(r0.reasoning_text), "擷取到思考內容 reasoning_text（reasoning_content）")
         chunks = _json.loads(r0.raw_response)
         _check(isinstance(chunks, list) and len(chunks) > 0,
                "raw_response 為可解析的完整串流 JSON（保留所有 chunk）")
+        # 推理模型：reasoning 與 content 都計入吞吐（TTFT 取首個 token，AC2 仍成立）
+        decode_r = r0.e2e_s - r0.ttft_ms / 1000.0
+        _check(abs(r0.tokens_per_s - r0.output_tokens / decode_r) < 1e-6,
+               "推理模型 tokens_per_s = (含 reasoning 的)tokens ÷ (e2e − ttft)")
+
+        # --- 無 reasoning 的一般模型：原文照常、output_chars==len(output_text)、計時正常 ---
+        print("[原文] 無思考內容的一般模型（model 含 plain）")
+        plain = OpenAIChatAdapter(base_url=base, model="mock-plain", timeout=30)
+        pres = run_single(plain, ["hi"] * 3, scenario="it_plain", run_label="MOCK",
+                          max_tokens=12, stream=True)
+        p0 = pres[0]
+        _check(all(r.success for r in pres), "無 reasoning：全部成功")
+        _check(p0.reasoning_text == "", "無 reasoning：reasoning_text 為空")
+        _check(bool(p0.output_text) and p0.output_chars == len(p0.output_text),
+               "無 reasoning：output_chars == len(output_text)")
+        _check(p0.ttft_ms is not None and p0.ttft_ms / 1000.0 < p0.e2e_s,
+               "無 reasoning：TTFT 正常（< e2e）")
+        _check(abs(p0.tokens_per_s - p0.output_tokens / (p0.e2e_s - p0.ttft_ms / 1000.0)) < 1e-6,
+               "無 reasoning：tokens_per_s 仍符合 AC2")
 
         # --- 欄位契約：CSV 含原文三欄、但排除超長的 raw_response（只進 JSON）---
         from core.metrics import field_names

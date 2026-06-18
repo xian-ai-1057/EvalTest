@@ -57,7 +57,10 @@ SSE 逐行解析：送出前記 `t0` → 首個內容 chunk = **TTFT**；累積�
 對應 Excel 的「每秒字數、毫秒/字」。
 另一併擷取原文：`delta.content` 累積為 `output_text`、`delta.reasoning_content`（相容 `reasoning`）
 累積為 `reasoning_text`、輸入存 `input_text`、整段串流原始 chunk 存 `raw_response`；非串流則取
-`message.content` / `message.reasoning_content` 與整個回應物件。輸出量（tokens/chars）仍只計最終內容。
+`message.content` / `message.reasoning_content` 與整個回應物件。
+推理模型的 reasoning 與 content 都視為「已生成輸出」：TTFT 取第一個 token（不分思考/內容）、
+TPOT 與 tokens_per_s/chars_per_s 及 `output_tokens`/`output_chars` 皆涵蓋兩者，與
+`usage.completion_tokens`（含 reasoning）一致（`output_text` 仍只放最終內容）。
 
 ## 接入既有服務（三種接法，對應 FR9）
 唯一接縫在 **adapter**；以下三者 runner / metrics / reporter / 情境腳本完全不變：

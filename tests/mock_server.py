@@ -61,18 +61,22 @@ class Handler(BaseHTTPRequestHandler):
         stream = bool(body.get("stream", False))
         want_usage = bool((body.get("stream_options") or {}).get("include_usage"))
         tokens = _gen_tokens(max_tokens)
+        # 以 model 名稱切換是否模擬推理模型：含 "plain" 視為無思考內容的一般模型
+        with_reasoning = "plain" not in str(body.get("model", "")).lower()
+        reason_tokens = _gen_reasoning() if with_reasoning else []
+        # completion_tokens 含思考內容 token（模擬 vLLM 等推理模型的計數方式）
+        n_comp = len(reason_tokens) + len(tokens)
 
         if not stream:
             text = "".join(tokens)
-            reasoning = "".join(_gen_reasoning())
+            message = {"role": "assistant", "content": text}
+            if reason_tokens:                       # 一般模型不帶 reasoning_content 欄位
+                message["reasoning_content"] = "".join(reason_tokens)
             payload = {
                 "id": "mock-1", "object": "chat.completion",
-                "choices": [{"index": 0,
-                             "message": {"role": "assistant",
-                                         "reasoning_content": reasoning, "content": text},
-                             "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 8, "completion_tokens": len(tokens),
-                          "total_tokens": 8 + len(tokens)},
+                "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": n_comp,
+                          "total_tokens": 8 + n_comp},
             }
             data = json.dumps(payload).encode("utf-8")
             self.send_response(200)
@@ -96,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
         send({"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
         time.sleep(TTFT_DELAY)
         # 思考內容（reasoning_content）先於正式內容串出，模擬推理模型
-        for i, rtok in enumerate(_gen_reasoning()):
+        for i, rtok in enumerate(reason_tokens):
             if i > 0:
                 time.sleep(TPOT_DELAY)
             send({"choices": [{"index": 0, "delta": {"reasoning_content": rtok},
@@ -109,8 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         send({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         if want_usage:
             send({"choices": [], "usage": {"prompt_tokens": 8,
-                                           "completion_tokens": len(tokens),
-                                           "total_tokens": 8 + len(tokens)}})
+                                           "completion_tokens": n_comp,
+                                           "total_tokens": 8 + n_comp}})
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 
