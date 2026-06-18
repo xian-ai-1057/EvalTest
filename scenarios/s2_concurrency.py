@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import make_inputs, output_path
+from scenarios._common import load_dataset_inputs, make_inputs, output_path
 from config import Config
 from core.client import make_adapter
 from core.gpu import GpuSampler
@@ -43,9 +43,13 @@ def main():
     ap = argparse.ArgumentParser(description="情境② LLM 高併發服務（併發掃描）")
     ap.add_argument("--concurrency", default="", help="併發級別，如 1,8,16,32（預設取 .env）")
     ap.add_argument("--n", type=int, default=cfg.N_REQUESTS, help="每個併發級別的請求筆數")
-    ap.add_argument("--input-len", type=int, default=cfg.INPUT_LEN)
+    ap.add_argument("--input-len", type=int, default=cfg.INPUT_LEN,
+                    help="合成輸入的字元長度（給 --dataset 時忽略）")
     ap.add_argument("--max-tokens", type=int, default=cfg.MAX_TOKENS)
     ap.add_argument("--label", default=cfg.RUN_LABEL)
+    ap.add_argument("--dataset", default="",
+                    help="從檔案讀 prompt 當輸入（.csv 取 prompt 欄/第一欄；.txt 一行一個）。"
+                         "給了就覆蓋合成輸入；每個併發級別取 --n 筆，不足循環補滿")
     ap.add_argument("--arrival", choices=["closed", "poisson"], default="closed")
     ap.add_argument("--rate", type=float, default=None, help="poisson 模式每秒請求數")
     args = ap.parse_args()
@@ -53,13 +57,15 @@ def main():
 
     levels = _parse_levels(args.concurrency, cfg.CONCURRENCY_LEVELS)
     adapter = make_adapter(cfg)
-    print(f"情境② 高併發 | 併發級別={levels} 每級 n={args.n} max_tokens={args.max_tokens} "
+    src = f"資料集={args.dataset}" if args.dataset else f"輸入長度={args.input_len}"
+    print(f"情境② 高併發 | 併發級別={levels} 每級 n={args.n} {src} max_tokens={args.max_tokens} "
           f"標籤={cfg.RUN_LABEL} SLA(TTFT≤{cfg.SLA_TTFT_MS}ms, e2e_p95≤{cfg.SLA_P95_MS}ms)")
 
     all_results = []
     per_level = []
     for level in levels:
-        inputs = make_inputs(args.n, args.input_len)
+        inputs = (load_dataset_inputs(args.dataset, args.n) if args.dataset
+                  else make_inputs(args.n, args.input_len))
         sampler = GpuSampler(cfg.GPU_SAMPLE_INTERVAL) if cfg.GPU_MONITOR else None
         if sampler:
             sampler.start()

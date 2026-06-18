@@ -105,6 +105,32 @@ def main():
         _check(c2[0].ttft_ms is not None and c2[0].tpot_ms is not None,
                "callable generator 量到 TTFT/TPOT")
 
+        # --- 資料集輸入：CSV / TXT 讀檔 + 依 n 對齊 ---
+        print("[資料集] load_prompts_file / load_dataset_inputs（CSV、TXT、n 對齊）")
+        import tempfile as _tf
+        from scenarios._common import load_dataset_inputs, load_prompts_file
+        d = _tf.mkdtemp()
+        # 帶 BOM 表頭的 CSV：應取 prompt 欄、跳過表頭、忽略其他欄
+        csv_hdr = os.path.join(d, "with_header.csv")
+        with open(csv_hdr, "w", encoding="utf-8-sig", newline="") as f:
+            f.write("id,prompt,note\n1,請問記憶體頻寬是什麼,a\n2,FP8 與 FP4 差異,b\n")
+        p1 = load_prompts_file(csv_hdr)
+        _check(p1 == ["請問記憶體頻寬是什麼", "FP8 與 FP4 差異"], "CSV 依 prompt 欄取值、跳過表頭")
+        # 無可辨識表頭的 CSV：取第一欄、整份都算資料
+        csv_nohdr = os.path.join(d, "no_header.csv")
+        with open(csv_nohdr, "w", encoding="utf-8", newline="") as f:
+            f.write("第一句,x\n第二句,y\n")
+        _check(load_prompts_file(csv_nohdr) == ["第一句", "第二句"], "無表頭 CSV 取第一欄")
+        # TXT：一行一個、略過空白行
+        txt = os.path.join(d, "prompts.txt")
+        with open(txt, "w", encoding="utf-8") as f:
+            f.write("第一個提示\n\n  第二個提示  \n")
+        _check(load_prompts_file(txt) == ["第一個提示", "第二個提示"], "TXT 一行一個、略過空白行")
+        # 依 n 對齊：不足循環補滿、過多截斷
+        _check(len(load_dataset_inputs(csv_hdr, 5)) == 5, "n=5 由 2 筆循環補滿")
+        _check(load_dataset_inputs(csv_hdr, 5)[2] == p1[0], "循環補滿順序正確（第3筆回到第1筆）")
+        _check(len(load_dataset_inputs(txt, 1)) == 1, "n=1 截斷至 1 筆")
+
         print("\n全部整合檢查通過 ✅")
     finally:
         httpd.shutdown()
