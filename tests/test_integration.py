@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.client import OpenAIChatAdapter, GenericJSONAdapter
+from core.client import OpenAIChatAdapter, GenericJSONAdapter, VLMAdapter, CallableAdapter
 from core.metrics import summarize
 from core.reporter import print_summary
 from core.runner import run_concurrent, run_single
@@ -70,6 +70,40 @@ def main():
                           run_label="MOCK", stream=False)
         _check(all(r.success for r in gres), "generic 全部成功")
         _check(gres[0].output_chars and gres[0].output_chars > 0, "generic 取到輸出文字")
+
+        # --- VLMAdapter 圖片→文本（FR10/AC7）---
+        print("[VLM] VLMAdapter（圖片→base64→/predict）")
+        import base64
+        import tempfile
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tf.write(png)
+            img_path = tf.name
+        vlm = VLMAdapter(url=f"{base}/predict",
+                         request_template='{"image": "{image_b64}", "prompt": "{prompt}"}',
+                         response_path="output", prompt="描述這張圖片", timeout=30)
+        vres = run_single(vlm, [img_path] * 3, scenario="it_vlm", run_label="MOCK", stream=False)
+        _check(all(r.success for r in vres), "VLM 全部成功")
+        _check(vres[0].e2e_s is not None and (vres[0].output_chars or 0) > 0,
+               "VLM 量到 e2e 與輸出文字")
+
+        # --- CallableAdapter 套件版（FR11/AC8）---
+        print("[套件] CallableAdapter：回完整字串 / generator")
+        c1 = run_single(CallableAdapter(lambda p: "這是一段辨識結果文字"),
+                        ["x"] * 3, scenario="it_callable", run_label="MOCK")
+        _check(all(r.success for r in c1) and c1[0].e2e_s is not None, "callable 回字串量到 e2e")
+
+        def _gen(_p):
+            import time as _t
+            for ch in "逐字產出測試":
+                _t.sleep(0.005)
+                yield ch
+        c2 = run_single(CallableAdapter(_gen), ["x"] * 3,
+                        scenario="it_callable_stream", run_label="MOCK")
+        _check(c2[0].ttft_ms is not None and c2[0].tpot_ms is not None,
+               "callable generator 量到 TTFT/TPOT")
 
         print("\n全部整合檢查通過 ✅")
     finally:

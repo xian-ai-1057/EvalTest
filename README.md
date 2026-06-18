@@ -43,6 +43,7 @@ python tests/test_integration.py
 | `python scenarios/s3_batch.py --n 500 --concurrency 32 --input-len 2000` | ③ 批次推論 | 筆/小時、整批完成時間、單筆延遲 |
 | `python scenarios/s4_bert.py --mode batch --concurrency 32` | ④ BERT 推論 | 單筆延遲 / 批次吞吐（QPS）|
 | `python scenarios/s6_stt.py --n 20 --concurrency 4 --audio-seconds 30` | ⑥ STT | 即時率 RTF、並發路數 |
+| `python scenarios/s_vlm.py --images "data/images/*" --concurrency 1` | VLM 圖片→文本 | 單張延遲 / 吞吐（張/秒）|
 
 > 比較 H100 vs PRO 6000：把 `BASE_URL`/`MODEL` 指向各自端點，`RUN_LABEL` 標好（如 `H100-FP8`、`PRO6000-FP4`），
 > 各跑一輪，再並排比較產出的 CSV 與摘要。
@@ -51,8 +52,17 @@ python tests/test_integration.py
 - 每筆明細：`results/<情境>_<標籤>_<時間>.csv`（欄位含 TTFT/TPOT/e2e/tokens/併發/標籤…）
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
 
-## 接入既有服務（三種接法）
+## 接入既有服務（測試你自己的程式）
 **唯一接縫在 adapter**：`runner` / `metrics` / `reporter` / 情境腳本完全不用改。
+
+呼叫模型有兩種形態：
+- **HTTP 服務**：用 `requests` 打端點 →（a）（b）（c）（d）。
+- **已封裝成 Python 套件**：在程式內直接呼叫、不經 HTTP →（e）。
+
+兩種形態都回傳同一個 `RequestResult`，後續統計與 CSV/摘要完全共用。
+
+**步驟**：① 辨識你的服務協定 → ② 選 adapter（設 `.env` 的 `ADAPTER`）→ ③ 填對應設定 →
+④ 準備輸入（文字 prompt 或圖片資料夾）→ ⑤ 跑對應情境腳本 → ⑥ 看 CSV 明細與主控台摘要。
 
 **(a) 服務是 OpenAI 相容 chat → 零程式**
 ```ini
@@ -77,6 +87,32 @@ GENERIC_HEADERS={"X-Api-Key": "..."}            # 選填
 複製 `core/custom_adapter_example.py`，改 3 個 TODO，實作
 `call(payload, *, max_tokens, temperature, stream) -> RequestResult`（記 `t0`／首 chunk=TTFT／結束=e2e），
 再於 `.env` 設 `ADAPTER=custom`。
+
+**(d) 多模態 / 圖片輸入（VLM：圖片→文本）→ 零程式，純設定**
+適用「輸入圖片、輸出文本」的自訂 JSON（base64）HTTP 服務：
+```ini
+ADAPTER=vlm
+VLM_URL=http://你的VLM服務/predict
+VLM_PROMPT=請描述這張圖片的內容。               # 所有圖片共用的提示詞
+VLM_REQUEST_TEMPLATE={"image": "{image_b64}", "prompt": "{prompt}"}  # {image_b64} 為圖片 base64
+VLM_RESPONSE_PATH=output                          # 從回應取文本的點路徑
+VLM_IMAGE_DATA_URI=false                          # 若你的服務要 data:image/...;base64, 前綴則設 true
+```
+把圖片放進資料夾，跑：
+```bash
+python scenarios/s_vlm.py --images "data/images/*.jpg" --concurrency 1   # 單張延遲
+python scenarios/s_vlm.py --images "data/images/*.jpg" --concurrency 8   # 吞吐 / 並發路數
+```
+> 其他 VLM 形態：若服務是 **OpenAI 相容 vision**，可改用 `ADAPTER=openai_chat` 並在訊息放 `image_url`（需小幅自訂 `_body`）；
+> 若是 **multipart 上傳圖檔**，照 (c) 複製 `custom_adapter_example.py` 實作上傳即可。
+
+**(e) 已封裝成 Python 套件（直接呼叫，非 HTTP）**
+模型若已包成套件、直接 import 呼叫拿結果：編輯 `core/package_adapter_example.py` 的 2 個 TODO
+（import 套件、把「載入圖片→呼叫→取文本」包成 `fn(payload)->文本`），再於 `.env` 設 `ADAPTER=package`。
+跑法與 (d) 相同（`python scenarios/s_vlm.py ...`），免起 HTTP 伺服器。
+- 套件若**逐 token 產出**（回 generator），框架會量 TTFT/TPOT；一次回完整文字則量端到端。
+- 並發注意：走 ThreadPoolExecutor，受 GIL 影響；多數推論套件於 GPU/C++ 推論時會釋放 GIL，threaded 並發仍能反映真實吞吐；
+  純 Python CPU-bound 不釋放 GIL 時，並發數據僅供參考。
 
 > 串流注意：TTFT/TPOT 需要串流；不串流的服務，這兩個指標會自動退化為以端到端延遲為準、TPOT 不適用，其餘照常。
 

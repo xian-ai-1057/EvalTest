@@ -10,8 +10,11 @@ runner / metrics / reporter 只認得這個契約，不在意底層 HTTP 細節�
 """
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import time
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -215,6 +218,120 @@ class GenericJSONAdapter:
         return r
 
 
+class VLMAdapter:
+    """VLM（圖片→文本）HTTP 服務，自訂 JSON（base64）。
+
+    payload＝圖片檔路徑；讀檔 → base64 → 套用 request_template（佔位符 {image_b64} / {prompt} /
+    {max_tokens}）→ POST → 依 response_path 取出文本。僅量端到端延遲（無串流 → 無 TTFT/TPOT）。
+    純設定即可接：見 .env 的 VLM_* 欄位。
+    """
+
+    def __init__(self, url: str,
+                 request_template: str = '{"image": "{image_b64}", "prompt": "{prompt}"}',
+                 response_path: str = "output", prompt: str = "請描述這張圖片的內容。",
+                 headers: Optional[dict] = None, timeout: float = 60.0,
+                 data_uri: bool = False):
+        self.url = url
+        self.request_template = request_template
+        self.response_path = response_path
+        self.prompt = prompt
+        self.headers = {"Content-Type": "application/json", **(headers or {})}
+        self.timeout = timeout
+        self.data_uri = data_uri
+
+    def _encode_image(self, image_path) -> str:
+        raw = Path(image_path).read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+        if self.data_uri:
+            mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
+            return f"data:{mime};base64,{b64}"
+        return b64
+
+    def _build_body(self, image_path, max_tokens: int) -> dict:
+        text = self.request_template.replace("{image_b64}", self._encode_image(image_path))
+        # prompt 經 json.dumps 跳脫後去掉外層引號，安全代入模板字串內
+        text = text.replace("{prompt}", json.dumps(self.prompt)[1:-1])
+        text = text.replace("{max_tokens}", str(max_tokens))
+        return json.loads(text)
+
+    def call(self, payload, *, max_tokens: int = 256, temperature: float = 0.0,
+             stream: bool = False) -> RequestResult:
+        r = RequestResult(ts=time.time())
+        t0 = time.perf_counter()
+        try:
+            body = self._build_body(payload, max_tokens)
+            resp = requests.post(self.url, json=body, headers=self.headers, timeout=self.timeout)
+            r.status_code = resp.status_code
+            resp.raise_for_status()
+            t_end = time.perf_counter()
+            out = _dig(resp.json(), self.response_path)
+            text = "" if out is None else (out if isinstance(out, str)
+                                           else json.dumps(out, ensure_ascii=False))
+            r.success = True
+            r.e2e_s = t_end - t0
+            r.output_chars = len(text)
+            r.chars_per_s = _rate(r.output_chars, r.e2e_s)
+        except (requests.RequestException, json.JSONDecodeError, ValueError, OSError) as exc:
+            r.success = False
+            r.error = f"{type(exc).__name__}: {exc}"
+        return r
+
+
+class CallableAdapter:
+    """in-process 呼叫：把任一 Python callable 包成 adapter（用於已封裝成套件的模型）。
+
+    `fn(payload) -> 文本`：量端到端延遲。
+    `fn(payload) -> generator/iterator`（逐 token 產出）：記首個 yield 為 TTFT、累積算 TPOT，
+    與 HTTP 串流邏輯一致。
+
+    並發注意：ThreadPoolExecutor 受 GIL 影響；多數推論套件於 GPU/C++ 推論時會釋放 GIL，
+    threaded 並發仍能反映真實吞吐；純 Python CPU-bound 不釋放 GIL 時，並發數據僅供參考。
+    """
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def call(self, payload, *, max_tokens: int = 256, temperature: float = 0.0,
+             stream: bool = True) -> RequestResult:
+        r = RequestResult(ts=time.time())
+        t0 = time.perf_counter()
+        try:
+            out = self.fn(payload)
+            if hasattr(out, "__iter__") and not isinstance(out, (str, bytes, list, dict)):
+                # 逐 token 產出（generator/iterator）
+                parts = []
+                t_first = t_last = None
+                n = 0
+                for piece in out:
+                    now = time.perf_counter()
+                    if t_first is None:
+                        t_first = now
+                    t_last = now
+                    n += 1
+                    parts.append(str(piece))
+                t_end = time.perf_counter()
+                text = "".join(parts)
+                if t_first is not None:
+                    r.ttft_ms = (t_first - t0) * 1000.0
+                    if n > 1 and t_last > t_first:
+                        r.tpot_ms = (t_last - t_first) / (n - 1) * 1000.0
+            else:
+                text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+                t_end = time.perf_counter()
+            r.success = True
+            r.status_code = 200
+            r.e2e_s = t_end - t0
+            r.output_chars = len(text)
+            decode_s = r.e2e_s
+            if r.ttft_ms is not None and (r.e2e_s - r.ttft_ms / 1000.0) > 0:
+                decode_s = r.e2e_s - r.ttft_ms / 1000.0
+            r.chars_per_s = _rate(r.output_chars, decode_s)
+        except Exception as exc:  # 套件呼叫可能拋任意例外
+            r.success = False
+            r.error = f"{type(exc).__name__}: {exc}"
+        return r
+
+
 def make_adapter(config):
     """依 config.ADAPTER 建立 adapter。新增自訂協定時，於此登記名稱即可。"""
     name = (config.ADAPTER or "openai_chat").strip().lower()
@@ -233,6 +350,22 @@ def make_adapter(config):
             headers=config.GENERIC_HEADERS,
             timeout=config.REQUEST_TIMEOUT,
         )
+    if name == "vlm":
+        if not config.VLM_URL:
+            raise ValueError("ADAPTER=vlm 需設定 VLM_URL")
+        return VLMAdapter(
+            url=config.VLM_URL,
+            request_template=config.VLM_REQUEST_TEMPLATE,
+            response_path=config.VLM_RESPONSE_PATH,
+            prompt=config.VLM_PROMPT,
+            headers=config.VLM_HEADERS,
+            timeout=config.REQUEST_TIMEOUT,
+            data_uri=config.VLM_IMAGE_DATA_URI,
+        )
+    if name == "package":
+        # 已封裝成 Python 套件、直接呼叫（非 HTTP）。延遲匯入範本以取得 callable。
+        from core.package_adapter_example import build_callable
+        return CallableAdapter(build_callable(config))
     if name == "custom":
         # 延遲匯入，避免未使用時也要求範本可載入
         from core.custom_adapter_example import CustomAdapter
