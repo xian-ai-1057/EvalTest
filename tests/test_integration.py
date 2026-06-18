@@ -56,9 +56,12 @@ def main():
         _check(bool(r0.output_text) and r0.output_chars == len(r0.reasoning_text) + len(r0.output_text),
                "擷取到輸出內容 output_text（output_chars = 思考+內容字數）")
         _check(bool(r0.reasoning_text), "擷取到思考內容 reasoning_text（reasoning_content）")
-        chunks = _json.loads(r0.raw_response)
-        _check(isinstance(chunks, list) and len(chunks) > 0,
-               "raw_response 為可解析的完整串流 JSON（保留所有 chunk）")
+        final = _json.loads(r0.raw_response)
+        _check(isinstance(final, dict)
+               and final["choices"][0]["message"]["content"] == r0.output_text
+               and final["choices"][0]["message"].get("reasoning_content", "") == r0.reasoning_text
+               and final.get("usage", {}).get("completion_tokens") == r0.output_tokens,
+               "raw_response 為重組後的最終回應物件（含 message／usage，非逐 chunk）")
         # 推理模型：reasoning 與 content 都計入吞吐（TTFT 取首個 token，AC2 仍成立）
         decode_r = r0.e2e_s - r0.ttft_ms / 1000.0
         _check(abs(r0.tokens_per_s - r0.output_tokens / decode_r) < 1e-6,
@@ -79,6 +82,22 @@ def main():
         _check(abs(p0.tokens_per_s - p0.output_tokens / (p0.e2e_s - p0.ttft_ms / 1000.0)) < 1e-6,
                "無 reasoning：tokens_per_s 仍符合 AC2")
 
+        # --- 非串流：無 TTFT，TPOT 改由 usage.completion_tokens 算平均每字時間 ---
+        print("[非串流] stream=False：TPOT 用 usage.completion_tokens 平均")
+        nres = run_single(adapter, ["hi"] * 3, scenario="it_nostream", run_label="MOCK",
+                          max_tokens=12, stream=False)
+        n0 = nres[0]
+        _check(all(r.success for r in nres), "非串流：全部成功")
+        _check(n0.ttft_ms is None, "非串流：無 TTFT（不串流量不到首字）")
+        _check(n0.output_tokens and n0.output_tokens > 0, "非串流：有輸出 token 數（來自 usage）")
+        _check(n0.tpot_ms is not None
+               and abs(n0.tpot_ms - n0.e2e_s / n0.output_tokens * 1000.0) < 1e-6,
+               "非串流：TPOT = e2e ÷ usage.completion_tokens（平均每字毫秒）")
+        nfinal = _json.loads(n0.raw_response)
+        _check(isinstance(nfinal, dict)
+               and nfinal.get("usage", {}).get("completion_tokens") == n0.output_tokens,
+               "非串流：raw_response 為完整回應物件（usage 與 output_tokens 一致）")
+
         # --- 欄位契約：CSV 含原文三欄、但排除超長的 raw_response（只進 JSON）---
         from core.metrics import field_names
         cols = field_names()
@@ -98,8 +117,8 @@ def main():
             recs = _json.load(_f)
         _check(len(recs) == len(results) and bool(recs[0].get("output_text")),
                "JSON 明細每筆含 output_text")
-        _check(isinstance(recs[0].get("raw_response"), list),
-               "JSON 明細的 raw_response 已還原為巢狀物件")
+        _check(isinstance(recs[0].get("raw_response"), dict),
+               "JSON 明細的 raw_response 已還原為巢狀物件（重組後的最終回應）")
 
         # --- 並發（AC3 雛形）---
         print("[並發] run_concurrent concurrency=8 n=24")

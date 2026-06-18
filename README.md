@@ -67,7 +67,7 @@ python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 
   欄位含 TTFT/TPOT/e2e/tokens/字數/併發/標籤…，以及**原文**：`input_text`（輸入原文）、
   `reasoning_text`（思考內容）、`output_text`（輸出內容），方便用試算表快速檢視。
 - 每筆明細 **JSON**：`results/<情境>_<標籤>_<時間>.json`
-  保存每筆所有欄位，並額外含 `raw_response`（**完整原始回應**：串流為所有 chunk 清單、非串流為回應物件）。
+  保存每筆所有欄位，並額外含 `raw_response`（**最後輸出結果**：串流重組成與非串流一致的回應物件，含 message／usage／finish_reason，不再逐 chunk 保存）。
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
 
 > 思考內容（reasoning）：串流取 `delta.reasoning_content`（相容 `reasoning`）、非串流取
@@ -139,7 +139,7 @@ python scenarios/s_vlm.py --images "data/images/*.jpg" --concurrency 8   # 吞�
 - 並發注意：走 ThreadPoolExecutor，受 GIL 影響；多數推論套件於 GPU/C++ 推論時會釋放 GIL，threaded 並發仍能反映真實吞吐；
   純 Python CPU-bound 不釋放 GIL 時，並發數據僅供參考。
 
-> 串流注意：TTFT/TPOT 需要串流；不串流的服務，這兩個指標會自動退化為以端到端延遲為準、TPOT 不適用，其餘照常。
+> 串流注意：TTFT 需要串流；非串流時量不到 TTFT，TPOT 改用 `usage.completion_tokens` 的 token 數算平均每字時間（e2e ÷ tokens）。無 `usage` 的服務（如 generic_json／vlm）則 TPOT 不適用、僅量端到端，其餘照常。
 
 ## 架構
 ```

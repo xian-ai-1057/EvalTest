@@ -36,7 +36,7 @@ def _payload_text(payload) -> str:
 
 
 class OpenAIChatAdapter:
-    """OpenAI 相容 chat。串流模式下可量 TTFT/TPOT；非串流只量端到端。"""
+    """OpenAI 相容 chat。串流量 TTFT/TPOT；非串流無 TTFT，TPOT 改由 usage.completion_tokens 平均。"""
 
     def __init__(self, base_url: str, model: str, api_key: str = "",
                  timeout: float = 60.0):
@@ -82,11 +82,12 @@ class OpenAIChatAdapter:
         body = self._body(payload, max_tokens, temperature, stream=True)
         text_parts = []
         reason_parts = []        # 思考內容（reasoning_content）逐塊累積
-        raw_chunks = []          # 完整串流原始 chunk，供 JSON 明細保存
         t_first = None
         t_last = None
         n_chunks = 0
         usage_tokens = None
+        usage = None             # 末包完整 usage（供重組最終回應物件）
+        finish_reason = None     # 結束原因（stop / length…）
         with requests.post(self.url, json=body, headers=self.headers,
                            timeout=self.timeout, stream=True) as resp:
             r.status_code = resp.status_code
@@ -104,13 +105,16 @@ class OpenAIChatAdapter:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                raw_chunks.append(chunk)
                 # usage 可能單獨出現在末包（choices 為空）
                 if chunk.get("usage"):
-                    usage_tokens = chunk["usage"].get("completion_tokens")
+                    usage = chunk["usage"]
+                    usage_tokens = usage.get("completion_tokens")
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
+                fr = choices[0].get("finish_reason")
+                if fr is not None:
+                    finish_reason = fr
                 delta = choices[0].get("delta") or {}
                 # 思考內容（reasoning_content / reasoning）與正式內容皆視為「已生成輸出」：
                 # 任一種 token 都計入首字時間 / 逐字延遲 / token 數，使吞吐與 usage（含 reasoning）一致。
@@ -137,11 +141,19 @@ class OpenAIChatAdapter:
         # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數優先取 usage（含 reasoning）
         r.output_chars = len(reasoning) + len(text)
         r.output_tokens = usage_tokens if usage_tokens is not None else n_chunks
-        # 原文：輸入、思考內容、輸出內容，以及完整串流原始回應（所有 chunk）
+        # 原文：輸入、思考內容、輸出內容；raw_response 只存「最後輸出結果」——
+        # 重組成與非串流一致的回應物件（含 message / finish_reason / usage），不再逐 chunk 保存。
         r.input_text = _payload_text(payload)
         r.reasoning_text = reasoning
         r.output_text = text
-        r.raw_response = json.dumps(raw_chunks, ensure_ascii=False)
+        message = {"role": "assistant", "content": text}
+        if reasoning:                       # 與非串流一致：無思考內容則不帶此欄
+            message["reasoning_content"] = reasoning
+        final_obj = {"choices": [{"index": 0, "message": message,
+                                  "finish_reason": finish_reason}]}
+        if usage is not None:
+            final_obj["usage"] = usage
+        r.raw_response = json.dumps(final_obj, ensure_ascii=False)
         if t_first is not None:
             r.ttft_ms = (t_first - t0) * 1000.0
             if n_chunks > 1 and t_last > t_first:
@@ -173,8 +185,11 @@ class OpenAIChatAdapter:
         r.e2e_s = t_end - t0
         # 思考內容與正式內容都算「已生成輸出」：字數合計、token 數取 usage（含 reasoning）
         r.output_chars = len(reasoning) + len(text)
-        r.output_tokens = usage.get("completion_tokens")
-        # 非串流無法量首字/逐字延遲
+        ct = usage.get("completion_tokens")
+        r.output_tokens = ct
+        # 非串流無首字延遲；TPOT 改用 usage.completion_tokens 的 token 數算平均每字時間
+        if ct:
+            r.tpot_ms = r.e2e_s / ct * 1000.0
         r.tokens_per_s = _rate(r.output_tokens, r.e2e_s)
         r.chars_per_s = _rate(r.output_chars, r.e2e_s)
         # 原文：輸入、思考內容、輸出內容，以及完整原始回應

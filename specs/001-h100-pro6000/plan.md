@@ -56,8 +56,10 @@ SSE 逐行解析：送出前記 `t0` → 首個內容 chunk = **TTFT**；累積�
 （送 `stream_options.include_usage=true`），無則以 chunk 數 / 字元數回退；同時記 `output_chars`
 對應 Excel 的「每秒字數、毫秒/字」。
 另一併擷取原文：`delta.content` 累積為 `output_text`、`delta.reasoning_content`（相容 `reasoning`）
-累積為 `reasoning_text`、輸入存 `input_text`、整段串流原始 chunk 存 `raw_response`；非串流則取
-`message.content` / `message.reasoning_content` 與整個回應物件。
+累積為 `reasoning_text`、輸入存 `input_text`；`raw_response` 只存「最後輸出結果」——串流重組成與
+非串流一致的回應物件（message／finish_reason／usage），不再逐 chunk 保存。非串流則取
+`message.content` / `message.reasoning_content` 與整個回應物件，並以 `usage.completion_tokens`
+算平均每字時間當 TPOT（e2e ÷ tokens，無首字延遲）。
 推理模型的 reasoning 與 content 都視為「已生成輸出」：TTFT 取第一個 token（不分思考/內容）、
 TPOT 與 tokens_per_s/chars_per_s 及 `output_tokens`/`output_chars` 皆涵蓋兩者，與
 `usage.completion_tokens`（含 reasoning）一致（`output_text` 仍只放最終內容）。
@@ -67,7 +69,7 @@ TPOT 與 tokens_per_s/chars_per_s 及 `output_tokens`/`output_chars` 皆涵蓋�
 - **(a) OpenAI 相容 → 零程式**：`ADAPTER=openai_chat` + `BASE_URL/MODEL/API_KEY`。
 - **(b) 單純自訂 JSON → 純設定**：`ADAPTER=generic_json` + `GENERIC_URL` + `GENERIC_REQUEST_TEMPLATE`（含 `{input}`）+ `GENERIC_RESPONSE_PATH`。
 - **(c) 複雜/串流/特殊驗證 → 小幅自訂**：照 `core/custom_adapter_example.py` 實作 `call()->RequestResult`，`ADAPTER=自訂名`。
-- 不串流的服務：TTFT/TPOT 退化為以端到端延遲為準、TPOT 不適用，其餘照常。
+- 不串流的 OpenAI 相容服務：量不到 TTFT，TPOT 改以 `usage.completion_tokens` 算平均每字時間（e2e ÷ tokens）；無 `usage` 的服務（generic_json／vlm）則 TPOT 不適用、僅量端到端，其餘照常。
 
 ## 情境腳本（薄層，流程一致）
 讀 Config → `make_adapter` →（可選）`gpu.start()` → runner 單發/並發 → `gpu.stop()` → `summarize` → `write_csv`+`print_summary`。

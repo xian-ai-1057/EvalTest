@@ -15,7 +15,7 @@ class RequestResult:
 
     除了量測數值，亦保留「原文」供人工檢視：input_text（輸入原文）、reasoning_text
     （思考內容 / reasoning_content，無則空）、output_text（輸出內容）會寫進 CSV；
-    raw_response（完整原始回應 JSON 字串）因內容過長，標記 csv=False，只寫進 JSON 明細檔。
+    raw_response（最後輸出結果的完整回應物件 JSON 字串；串流重組成與非串流一致的物件）因屬結構化內容、不適合表格，標記 csv=False，只寫進 JSON 明細檔。
     """
     scenario: str = ""
     run_label: str = ""
