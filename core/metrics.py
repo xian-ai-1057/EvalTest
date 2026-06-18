@@ -15,7 +15,8 @@ class RequestResult:
 
     除了量測數值，亦保留「原文」供人工檢視：input_text（輸入原文）、reasoning_text
     （思考內容 / reasoning_content，無則空）、output_text（輸出內容）會寫進 CSV；
-    raw_response（完整原始回應 JSON 字串）因內容過長，標記 csv=False，只寫進 JSON 明細檔。
+    raw_response（最終結果 JSON 字串；串流會彙整成單一完成物件、非逐 chunk）標記 csv=False，
+    只寫進 JSON 明細檔。
     """
     scenario: str = ""
     run_label: str = ""
@@ -36,7 +37,7 @@ class RequestResult:
     input_text: str = ""                 # 輸入原文
     reasoning_text: str = ""             # 思考內容（reasoning_content；不適用 / 無則空）
     output_text: str = ""                # 輸出內容（最終回覆文字）
-    raw_response: str = field(default="", metadata={"csv": False})  # 完整原始回應（JSON 字串）
+    raw_response: str = field(default="", metadata={"csv": False})  # 最終結果（JSON 字串，串流彙整非逐 chunk）
 
 
 def field_names(include_raw: bool = False) -> list:

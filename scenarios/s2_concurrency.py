@@ -11,7 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import load_dataset_inputs, make_inputs, output_path
+from scenarios._common import (add_stream_flag, load_dataset_inputs, make_inputs,
+                               output_path, resolve_stream)
 from config import Config
 from core.client import make_adapter
 from core.gpu import GpuSampler
@@ -52,14 +53,16 @@ def main():
                          "給了就覆蓋合成輸入；每個併發級別取 --n 筆，不足循環補滿")
     ap.add_argument("--arrival", choices=["closed", "poisson"], default="closed")
     ap.add_argument("--rate", type=float, default=None, help="poisson 模式每秒請求數")
+    add_stream_flag(ap)
     args = ap.parse_args()
     cfg.RUN_LABEL = args.label
 
     levels = _parse_levels(args.concurrency, cfg.CONCURRENCY_LEVELS)
+    stream = resolve_stream(args, cfg)
     adapter = make_adapter(cfg)
     src = f"資料集={args.dataset}" if args.dataset else f"輸入長度={args.input_len}"
     print(f"情境② 高併發 | 併發級別={levels} 每級 n={args.n} {src} max_tokens={args.max_tokens} "
-          f"標籤={cfg.RUN_LABEL} SLA(TTFT≤{cfg.SLA_TTFT_MS}ms, e2e_p95≤{cfg.SLA_P95_MS}ms)")
+          f"stream={stream} 標籤={cfg.RUN_LABEL} SLA(TTFT≤{cfg.SLA_TTFT_MS}ms, e2e_p95≤{cfg.SLA_P95_MS}ms)")
 
     all_results = []
     per_level = []
@@ -72,7 +75,7 @@ def main():
         results, wall = run_concurrent(adapter, inputs, level,
                                        scenario="s2_concurrency", run_label=cfg.RUN_LABEL,
                                        max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE,
-                                       stream=True, arrival=args.arrival, rate=args.rate)
+                                       stream=stream, arrival=args.arrival, rate=args.rate)
         gpu_stats = sampler.stop() if sampler else None
         summ = summarize(results, wall_seconds=wall)
         print_summary(summ, gpu_stats)

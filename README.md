@@ -67,7 +67,7 @@ python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 
   欄位含 TTFT/TPOT/e2e/tokens/字數/併發/標籤…，以及**原文**：`input_text`（輸入原文）、
   `reasoning_text`（思考內容）、`output_text`（輸出內容），方便用試算表快速檢視。
 - 每筆明細 **JSON**：`results/<情境>_<標籤>_<時間>.json`
-  保存每筆所有欄位，並額外含 `raw_response`（**完整原始回應**：串流為所有 chunk 清單、非串流為回應物件）。
+  保存每筆所有欄位，並額外含 `raw_response`（**最終結果物件**：串流會彙整成單一完成物件、非串流即回應物件；不逐 chunk 保存）。
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
 
 > 思考內容（reasoning）：串流取 `delta.reasoning_content`（相容 `reasoning`）、非串流取

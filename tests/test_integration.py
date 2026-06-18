@@ -56,9 +56,12 @@ def main():
         _check(bool(r0.output_text) and r0.output_chars == len(r0.reasoning_text) + len(r0.output_text),
                "擷取到輸出內容 output_text（output_chars = 思考+內容字數）")
         _check(bool(r0.reasoning_text), "擷取到思考內容 reasoning_text（reasoning_content）")
-        chunks = _json.loads(r0.raw_response)
-        _check(isinstance(chunks, list) and len(chunks) > 0,
-               "raw_response 為可解析的完整串流 JSON（保留所有 chunk）")
+        final = _json.loads(r0.raw_response)
+        _check(isinstance(final, dict) and bool(final.get("choices")),
+               "raw_response 為彙整後的最終結果物件（非逐 chunk）")
+        _check(final["choices"][0]["message"].get("content") == r0.output_text,
+               "raw_response.choices[0].message.content == output_text")
+        _check(bool(final.get("usage")), "raw_response 保留 usage")
         # 推理模型：reasoning 與 content 都計入吞吐（TTFT 取首個 token，AC2 仍成立）
         decode_r = r0.e2e_s - r0.ttft_ms / 1000.0
         _check(abs(r0.tokens_per_s - r0.output_tokens / decode_r) < 1e-6,
@@ -98,8 +101,8 @@ def main():
             recs = _json.load(_f)
         _check(len(recs) == len(results) and bool(recs[0].get("output_text")),
                "JSON 明細每筆含 output_text")
-        _check(isinstance(recs[0].get("raw_response"), list),
-               "JSON 明細的 raw_response 已還原為巢狀物件")
+        _check(isinstance(recs[0].get("raw_response"), dict) and bool(recs[0]["raw_response"].get("choices")),
+               "JSON 明細的 raw_response 已還原為最終結果物件")
 
         # --- 並發（AC3 雛形）---
         print("[並發] run_concurrent concurrency=8 n=24")
