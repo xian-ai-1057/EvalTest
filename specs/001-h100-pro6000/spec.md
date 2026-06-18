@@ -31,6 +31,10 @@
 - **FR8** ④BERT / ⑥STT 非 chat 格式 → 用可設定的通用 JSON adapter，request/response 形狀留明確設定點。
 - **FR9** **可插拔 adapter 工廠**：既有服務可零程式接入（OpenAI 相容只改 `.env`；單純 JSON 純設定）
   或小幅自訂（實作 `call()->RequestResult`），核心與情境腳本不變。
+- **FR10** **VLM 圖片→文本**：支援自訂 JSON（base64）的 VLM HTTP 服務（`ADAPTER=vlm`），
+  圖片來源為資料夾/glob + 共用提示詞，零程式純設定即可量延遲/吞吐。
+- **FR11** **in-process 套件呼叫**：模型若已封裝成 Python 套件，可直接呼叫（非 HTTP，`ADAPTER=package`），
+  與 HTTP 共用同一 `RequestResult` 與統計/輸出；套件逐 token 產出時亦可量 TTFT/TPOT。
 
 ## 4. 非功能需求（NFR）
 - 簡潔易懂、模組可重用；唯一第三方相依 `requests`，其餘標準庫。
@@ -44,6 +48,8 @@
 - **AC4**：`GPU_MONITOR=true` 且有 `nvidia-smi` 時摘要含 GPU util/mem mean/max；無 `nvidia-smi` 時程式照常完成。
 - **AC5**：切換 `RUN_LABEL`（H100-FP8 / PRO6000-FP4）兩輪輸出兩份可並排比較的 CSV。
 - **AC6**：既有 OpenAI 相容服務只改 `.env`（`ADAPTER=openai_chat`）即可跑；單純 JSON 服務以 `ADAPTER=generic_json` 純設定可跑；自訂 adapter 範本能被工廠依名載入。
+- **AC7**：`ADAPTER=vlm` 對 mock `/predict` 跑通，CSV 每張圖一列且含 e2e/chars；`s_vlm.py` 可由資料夾/glob 取圖。
+- **AC8**：`CallableAdapter` 對假函式量到 e2e；對 generator（逐 token）量到 TTFT/TPOT。
 
 ## 6. 需求 ↔ 實作 ↔ 驗證 追溯表
 | 使用者原始需求 | FR | 實作位置 | 驗證 |

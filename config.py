@@ -127,6 +127,15 @@ class Config:
     GENERIC_RESPONSE_PATH: str = "output"  # 點路徑，如 data.output 或 choices.0.text
     GENERIC_HEADERS: dict = field(default_factory=dict)
 
+    # --- VLM 圖片→文本（ADAPTER=vlm 為 HTTP 自訂 JSON；ADAPTER=package 為套件直呼）---
+    VLM_URL: str = ""
+    VLM_PROMPT: str = "請描述這張圖片的內容。"
+    VLM_REQUEST_TEMPLATE: str = '{"image": "{image_b64}", "prompt": "{prompt}"}'
+    VLM_RESPONSE_PATH: str = "output"      # 從回應取輸出文本的點路徑
+    VLM_HEADERS: dict = field(default_factory=dict)
+    VLM_IMAGE_GLOB: str = "data/images/*"  # 預設圖片來源（資料夾/glob）
+    VLM_IMAGE_DATA_URI: bool = False       # true 時 base64 前綴 data:<mime>;base64,
+
     @classmethod
     def load(cls) -> "Config":
         return cls(
@@ -151,6 +160,13 @@ class Config:
             GENERIC_REQUEST_TEMPLATE=_raw("GENERIC_REQUEST_TEMPLATE", cls.GENERIC_REQUEST_TEMPLATE),
             GENERIC_RESPONSE_PATH=_raw("GENERIC_RESPONSE_PATH", cls.GENERIC_RESPONSE_PATH),
             GENERIC_HEADERS=_as_json("GENERIC_HEADERS", {}),
+            VLM_URL=_raw("VLM_URL", cls.VLM_URL),
+            VLM_PROMPT=_raw("VLM_PROMPT", cls.VLM_PROMPT),
+            VLM_REQUEST_TEMPLATE=_raw("VLM_REQUEST_TEMPLATE", cls.VLM_REQUEST_TEMPLATE),
+            VLM_RESPONSE_PATH=_raw("VLM_RESPONSE_PATH", cls.VLM_RESPONSE_PATH),
+            VLM_HEADERS=_as_json("VLM_HEADERS", {}),
+            VLM_IMAGE_GLOB=_raw("VLM_IMAGE_GLOB", cls.VLM_IMAGE_GLOB),
+            VLM_IMAGE_DATA_URI=_as_bool("VLM_IMAGE_DATA_URI", cls.VLM_IMAGE_DATA_URI),
         )
 
 

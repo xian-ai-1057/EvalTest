@@ -1,6 +1,7 @@
 """情境腳本共用小工具：路徑設定、輸入構造、輸出檔名。"""
 from __future__ import annotations
 
+import glob as _glob
 import os
 import sys
 import time
@@ -31,6 +32,17 @@ def load_sample_prompts() -> list:
 
 def make_inputs(n: int, char_len: int) -> list:
     return [build_prompt(char_len) for _ in range(n)]
+
+
+def load_image_paths(glob_or_dir: str, n=None) -> list:
+    """從資料夾或 glob 取圖片路徑；若 n 大於圖片數則循環補滿。"""
+    pattern = glob_or_dir
+    if os.path.isdir(pattern):
+        pattern = os.path.join(pattern, "*")
+    paths = sorted(p for p in _glob.glob(pattern) if os.path.isfile(p))
+    if n and paths:
+        paths = [paths[i % len(paths)] for i in range(n)]
+    return paths
 
 
 def output_path(cfg, scenario: str) -> str:
