@@ -1,8 +1,10 @@
 """VLM 圖片→文本測試（接入已開發好的服務）。
 
-同一支腳本支援兩種呼叫形態，差別只在 .env 的 ADAPTER：
-  - ADAPTER=vlm     ：HTTP 自訂 JSON（base64），見 VLM_* 設定。
-  - ADAPTER=package ：模型已封裝成 Python 套件，直接呼叫（見 core/package_adapter_example.py）。
+同一支腳本支援三種呼叫形態，差別只在 .env 的 ADAPTER：
+  - ADAPTER=openai_chat ：VLM 本身是 OpenAI 相容 chat completion（vision）。圖片組成
+                          vision messages 走 SSE 串流，**可量 TTFT/TPOT**（首字/逐字延遲）。
+  - ADAPTER=vlm         ：HTTP 自訂 JSON（base64），見 VLM_* 設定。只量端到端延遲。
+  - ADAPTER=package     ：模型已封裝成 Python 套件，直接呼叫（見 core/package_adapter_example.py）。
 圖片來源：資料夾/glob（--images，預設取 .env 的 VLM_IMAGE_GLOB），所有圖片配同一段提示詞。
 量端到端延遲；--concurrency>1 另量吞吐（張/秒）與並發路數。
 """
@@ -14,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import load_image_paths, output_path
+from scenarios._common import build_vision_messages, load_image_paths, output_path
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
@@ -42,17 +44,26 @@ def main():
         return
 
     adapter = make_adapter(cfg)
-    print(f"VLM 圖片→文本 | adapter={cfg.ADAPTER} 圖片數={len(images)} 並發={args.concurrency} "
-          f"提示詞={cfg.VLM_PROMPT!r} 標籤={cfg.RUN_LABEL}")
+    # VLM 若是 OpenAI 相容 chat（vision）：把圖片組成 vision messages 走串流，可量 TTFT/TPOT；
+    # vlm/package 形態則把圖片路徑直接交給 adapter，只量端到端。
+    vision_chat = cfg.ADAPTER.strip().lower() == "openai_chat"
+    if vision_chat:
+        # OpenAI vision 標準要求 data:<mime>;base64, 前綴
+        inputs = [build_vision_messages(p, cfg.VLM_PROMPT, data_uri=True) for p in images]
+    else:
+        inputs = images
+    stream = vision_chat
+    print(f"VLM 圖片→文本 | adapter={cfg.ADAPTER}{'(vision/串流)' if vision_chat else ''} "
+          f"圖片數={len(images)} 並發={args.concurrency} 提示詞={cfg.VLM_PROMPT!r} 標籤={cfg.RUN_LABEL}")
 
     if args.concurrency <= 1:
-        results = run_single(adapter, images, scenario="s_vlm", run_label=cfg.RUN_LABEL,
-                             max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE, stream=False)
+        results = run_single(adapter, inputs, scenario="s_vlm", run_label=cfg.RUN_LABEL,
+                             max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE, stream=stream)
         wall = None
     else:
-        results, wall = run_concurrent(adapter, images, args.concurrency, scenario="s_vlm",
+        results, wall = run_concurrent(adapter, inputs, args.concurrency, scenario="s_vlm",
                                        run_label=cfg.RUN_LABEL, max_tokens=args.max_tokens,
-                                       temperature=cfg.TEMPERATURE, stream=False)
+                                       temperature=cfg.TEMPERATURE, stream=stream)
     summ = summarize(results, wall_seconds=wall)
     print_summary(summ)
     xlsx_path, json_path = write_outputs(results, summ, output_path(cfg, "s_vlm"))

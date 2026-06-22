@@ -28,9 +28,40 @@ def _rate(n: Optional[int], seconds: Optional[float]) -> Optional[float]:
     return n / seconds
 
 
+def _elide_images(messages: list) -> list:
+    """回傳 messages 的精簡副本：把 vision 的 image_url base64 換成短標記。
+
+    OpenAI vision 的 content 是多模態 part 清單（文字 + image_url）；圖片以 base64 內嵌時動輒
+    數十 KB，直接寫進明細的「原文」欄位會難以閱讀。此處只保留前綴片段（如
+    data:image/png;base64,…），文字 part 原樣保留。非 vision 結構則原樣回傳。
+    """
+    out = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url", "")
+                mark = (url[:32] + "…") if len(url) > 32 else url
+                parts.append({"type": "image_url", "image_url": {"url": mark}})
+            else:
+                parts.append(part)
+        out.append({**msg, "content": parts})
+    return out
+
+
 def _payload_text(payload) -> str:
-    """把輸入轉成可讀「原文」：messages 串列 / dict 轉 JSON 字串，其餘直接字串化。"""
-    if isinstance(payload, (list, dict)):
+    """把輸入轉成可讀「原文」：messages 串列 / dict 轉 JSON 字串，其餘直接字串化。
+
+    對 OpenAI vision 訊息（content 為多模態 part 清單）會省略圖片 base64，只留前綴標記，
+    避免把整段 base64 灌進明細的原文欄位。
+    """
+    if isinstance(payload, list):
+        return json.dumps(_elide_images(payload), ensure_ascii=False)
+    if isinstance(payload, dict):
         return json.dumps(payload, ensure_ascii=False)
     return str(payload)
 

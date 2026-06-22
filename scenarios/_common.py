@@ -1,8 +1,10 @@
 """情境腳本共用小工具：路徑設定、輸入構造、輸出檔名。"""
 from __future__ import annotations
 
+import base64 as _base64
 import csv as _csv
 import glob as _glob
+import mimetypes as _mimetypes
 import os
 import sys
 import time
@@ -89,6 +91,29 @@ def load_dataset_inputs(path: str, n=None) -> list:
     if n and n > 0:
         prompts = [prompts[i % len(prompts)] for i in range(n)]
     return prompts
+
+
+def build_vision_messages(image_path, prompt: str, *, data_uri: bool = True) -> list:
+    """把一張圖片 + 提示詞組成 OpenAI 相容 vision 的 messages（圖片以 base64 內嵌）。
+
+    回傳值可直接當 payload 傳給 OpenAIChatAdapter——其 `_body` 會把 list 視為現成 messages。
+    用於「VLM 服務本身就是 OpenAI 相容 chat completion（vision）」的情形，這條路可走串流、
+    量得到 TTFT/TPOT（純 HTTP 的 vlm adapter 只量端到端）。
+
+    data_uri：True 時 base64 前綴 data:<mime>;base64,（OpenAI 標準）；少數服務只收裸 base64 則設 False。
+    """
+    raw = Path(image_path).read_bytes()
+    b64 = _base64.b64encode(raw).decode("ascii")
+    if data_uri:
+        mime = _mimetypes.guess_type(str(image_path))[0] or "image/png"
+        b64 = f"data:{mime};base64,{b64}"
+    return [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": b64}},
+        ],
+    }]
 
 
 def load_image_paths(glob_or_dir: str, n=None) -> list:
