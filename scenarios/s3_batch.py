@@ -52,16 +52,16 @@ def main():
                                    max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE,
                                    stream=stream)
     summ = summarize(results, wall_seconds=wall)
-    csv_path, json_path = write_outputs(results, output_path(cfg, "s3_batch"))
     print_summary(summ)
+    xlsx_path, json_path = write_outputs(results, summ, output_path(cfg, "s3_batch"))
 
     items_per_hour = (summ.success / wall * 3600.0) if wall > 0 else 0.0
     per_item_p95 = "—" if summ.e2e_s.p95 is None else f"{summ.e2e_s.p95:.3f}s"
     print(f"  批次吞吐量：{items_per_hour:,.0f} 筆/小時")
     print(f"  整批完成時間：{wall:.2f}s（成功 {summ.success}/{summ.count} 筆）")
     print(f"  單筆延遲 p95：{per_item_p95}（門檻：單筆 ≤ 1 秒；整批對 D+1 由業務判定）")
-    print(f"明細 CSV：{csv_path}")
-    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
+    print(f"Excel 報表（第①頁統計摘要、第②頁明細）：{xlsx_path}")
+    print(f"JSON 明細（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

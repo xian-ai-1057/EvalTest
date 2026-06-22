@@ -82,16 +82,18 @@ def main():
         summ = summarize(results, wall_seconds=wall)
         print_summary(summ, gpu_stats)
         all_results.extend(results)
-        per_level.append((level, summ))
+        per_level.append((level, summ, gpu_stats))
 
-    csv_path, json_path = write_outputs(all_results, output_path(cfg, "s2_concurrency"))
+    xlsx_path, json_path = write_outputs(
+        all_results, [s for _, s, _ in per_level], output_path(cfg, "s2_concurrency"),
+        gpu_stats_list=[g for _, _, g in per_level])
 
     # 跨級別總表 + SLA 下最大併發
     print("\n併發掃描總表（依 SLA 判定達標）")
     print(f"{'併發':>6} {'成功率':>7} {'TTFT_p95(ms)':>13} {'e2e_p95(s)':>11} "
           f"{'總吞吐(tok/s)':>14} {'達標':>5}")
     max_ok = None
-    for level, summ in per_level:
+    for level, summ, _ in per_level:
         ok = _meets_sla(summ, cfg.SLA_TTFT_MS, cfg.SLA_P95_MS)
         if ok:
             max_ok = level if max_ok is None else max(max_ok, level)
@@ -101,8 +103,8 @@ def main():
         print(f"{level:>6} {summ.success_rate*100:>6.1f}% {ttft:>13} {e2e:>11} {thr:>14} "
               f"{'✓' if ok else '✗':>5}")
     print(f"\nSLA 下最大可承載併發：{max_ok if max_ok is not None else '無（最低併發即超標）'}")
-    print(f"明細 CSV：{csv_path}")
-    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
+    print(f"Excel 報表（第①頁統計摘要：每併發級別一個區塊、第②頁明細）：{xlsx_path}")
+    print(f"JSON 明細（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":
