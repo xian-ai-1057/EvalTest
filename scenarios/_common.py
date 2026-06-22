@@ -127,6 +127,27 @@ def load_image_paths(glob_or_dir: str, n=None) -> list:
     return paths
 
 
+def add_stream_flag(ap) -> None:
+    """為 chat 情境（s1/s2/s3）掛上串流開關旗標（互斥的 --stream / --no-stream）。
+
+    兩者皆未給時，由 resolve_stream 回退到 .env 的 STREAM（預設 True）：
+      --stream    強制開啟串流，量得 TTFT/TPOT（可覆寫 .env 的 STREAM=false）。
+      --no-stream 關閉串流，退化為只量端到端 e2e（將**無法**量 TTFT/TPOT）。
+    皆以 default=None 標示「指令列未指定」，交給 resolve_stream 決定最終值。
+    """
+    grp = ap.add_mutually_exclusive_group()
+    grp.add_argument("--stream", dest="stream", action="store_true", default=None,
+                     help="開啟串流（量 TTFT/TPOT）；未指定則取 .env 的 STREAM")
+    grp.add_argument("--no-stream", dest="stream", action="store_false", default=None,
+                     help="關閉串流（將無法量 TTFT/TPOT）")
+
+
+def resolve_stream(args, cfg) -> bool:
+    """決定最終串流開關：指令列 --stream/--no-stream 優先，未指定則回退 .env 的 cfg.STREAM。"""
+    val = getattr(args, "stream", None)
+    return cfg.STREAM if val is None else val
+
+
 def output_path(cfg, scenario: str) -> str:
     """產出報表基底路徑（.xlsx）；write_outputs 會據此同時產生同名 .xlsx 與 .json。"""
     ts = time.strftime("%Y%m%d-%H%M%S")
