@@ -104,6 +104,7 @@ class Config:
     INPUT_LEN: int = 512                  # 構造輸入 prompt 的字元長度
     MAX_TOKENS: int = 256                 # 期望輸出長度
     TEMPERATURE: float = 0.0
+    STREAM: bool = True                   # 是否使用串流（chat 情境 s1/s2/s3）；關閉則無 TTFT/TPOT
 
     # --- 執行規模 ---
     N_REQUESTS: int = 20
@@ -148,6 +149,7 @@ class Config:
             INPUT_LEN=_as_int("INPUT_LEN", cls.INPUT_LEN),
             MAX_TOKENS=_as_int("MAX_TOKENS", cls.MAX_TOKENS),
             TEMPERATURE=_as_float("TEMPERATURE", cls.TEMPERATURE),
+            STREAM=_as_bool("STREAM", cls.STREAM),
             N_REQUESTS=_as_int("N_REQUESTS", cls.N_REQUESTS),
             CONCURRENCY_LEVELS=_as_int_list("CONCURRENCY_LEVELS", [1, 8, 16, 32, 64, 128]),
             SLA_TTFT_MS=_as_float("SLA_TTFT_MS", cls.SLA_TTFT_MS),

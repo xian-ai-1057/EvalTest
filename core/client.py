@@ -84,7 +84,9 @@ class OpenAIChatAdapter:
         body = self._body(payload, max_tokens, temperature, stream=True)
         text_parts = []
         reason_parts = []        # 思考內容（reasoning_content）逐塊累積
-        raw_chunks = []          # 完整串流原始 chunk，供 JSON 明細保存
+        meta = {}                # 回應層級欄位（id/model/created…），用來彙整最終結果
+        usage_obj = None         # 末包的完整 usage
+        finish_reason = None
         t_first = None
         t_last = None
         n_chunks = 0
@@ -106,13 +108,19 @@ class OpenAIChatAdapter:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                raw_chunks.append(chunk)
+                # 回應層級中繼資料只取一次，供彙整最終結果用（object 另定為 chat.completion）
+                for k in ("id", "created", "model", "system_fingerprint"):
+                    if k not in meta and chunk.get(k) is not None:
+                        meta[k] = chunk[k]
                 # usage 可能單獨出現在末包（choices 為空）
                 if chunk.get("usage"):
-                    usage_tokens = chunk["usage"].get("completion_tokens")
+                    usage_obj = chunk["usage"]
+                    usage_tokens = usage_obj.get("completion_tokens")
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
+                if choices[0].get("finish_reason"):
+                    finish_reason = choices[0]["finish_reason"]
                 delta = choices[0].get("delta") or {}
                 # 思考內容（reasoning_content / reasoning）與正式內容皆視為「已生成輸出」：
                 # 任一種 token 都計入首字時間 / 逐字延遲 / token 數，使吞吐與 usage（含 reasoning）一致。
@@ -141,11 +149,20 @@ class OpenAIChatAdapter:
         # 此時 tokens_per_s 與系統總吞吐都是近似值，跨後端比較請以有回 usage 者為準。
         r.output_chars = len(reasoning) + len(text)
         r.output_tokens = usage_tokens if usage_tokens is not None else n_chunks
-        # 原文：輸入、思考內容、輸出內容，以及完整串流原始回應（所有 chunk）
+        # 原文：輸入、思考內容、輸出內容。raw_response 只記彙整後的「最終結果」
+        # （仿 OpenAI 完成物件，含 content/reasoning/usage/finish_reason），不逐 chunk 保存。
         r.input_text = _payload_text(payload)
         r.reasoning_text = reasoning
         r.output_text = text
-        r.raw_response = json.dumps(raw_chunks, ensure_ascii=False)
+        message = {"role": "assistant", "content": text}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        final = dict(meta)
+        final["object"] = "chat.completion"
+        final["choices"] = [{"index": 0, "message": message, "finish_reason": finish_reason}]
+        if usage_obj is not None:
+            final["usage"] = usage_obj
+        r.raw_response = json.dumps(final, ensure_ascii=False)
         if t_first is not None:
             r.ttft_ms = (t_first - t0) * 1000.0
             if n_chunks > 1 and t_last > t_first:

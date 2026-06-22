@@ -11,7 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import load_dataset_inputs, make_inputs, output_path
+from scenarios._common import (add_stream_flag, load_dataset_inputs, make_inputs,
+                               output_path, resolve_stream)
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
@@ -31,9 +32,11 @@ def main():
     ap.add_argument("--dataset", default="",
                     help="從檔案讀 prompt 當輸入（.csv 取 prompt 欄/第一欄；.txt 一行一個）。"
                          "給了就覆蓋合成輸入；不足 --n 會循環補滿")
+    add_stream_flag(ap)
     args = ap.parse_args()
     cfg.RUN_LABEL = args.label
 
+    stream = resolve_stream(args, cfg)
     adapter = make_adapter(cfg)
     if args.dataset:
         inputs = load_dataset_inputs(args.dataset, args.n)
@@ -42,12 +45,12 @@ def main():
         inputs = make_inputs(args.n, args.input_len)
         src = f"輸入長度={args.input_len}"
     print(f"情境③ 批次推論 | n={len(inputs)} 並發={args.concurrency} {src} "
-          f"max_tokens={args.max_tokens} 標籤={cfg.RUN_LABEL}")
+          f"max_tokens={args.max_tokens} stream={stream} 標籤={cfg.RUN_LABEL}")
 
     results, wall = run_concurrent(adapter, inputs, args.concurrency,
                                    scenario="s3_batch", run_label=cfg.RUN_LABEL,
                                    max_tokens=args.max_tokens, temperature=cfg.TEMPERATURE,
-                                   stream=True)
+                                   stream=stream)
     summ = summarize(results, wall_seconds=wall)
     print_summary(summ)
     xlsx_path, json_path = write_outputs(results, summ, output_path(cfg, "s3_batch"))
