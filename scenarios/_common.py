@@ -103,6 +103,7 @@ def load_image_paths(glob_or_dir: str, n=None) -> list:
 
 
 def output_path(cfg, scenario: str) -> str:
+    """產出報表基底路徑（.xlsx）；write_outputs 會據此同時產生同名 .xlsx 與 .json。"""
     ts = time.strftime("%Y%m%d-%H%M%S")
     label = (cfg.RUN_LABEL or "run").replace("/", "_").replace(" ", "")
-    return os.path.join(cfg.OUTPUT_DIR, f"{scenario}_{label}_{ts}.csv")
+    return os.path.join(cfg.OUTPUT_DIR, f"{scenario}_{label}_{ts}.xlsx")

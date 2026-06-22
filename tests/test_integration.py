@@ -84,17 +84,38 @@ def main():
         from core.metrics import field_names
         cols = field_names()
         _check(all(c in cols for c in ("input_text", "reasoning_text", "output_text")),
-               "CSV 欄位含 input_text / reasoning_text / output_text")
-        _check("raw_response" not in cols, "CSV 欄位不含 raw_response（只寫進 JSON）")
+               "明細欄位含 input_text / reasoning_text / output_text")
+        _check("raw_response" not in cols, "明細欄位不含 raw_response（只寫進 JSON）")
         _check("raw_response" in field_names(include_raw=True),
                "field_names(include_raw=True) 含 raw_response")
 
-        # --- 輸出契約：write_outputs 同時產生 CSV + JSON 明細 ---
+        # --- 輸出契約：write_outputs 產生 Excel（雙工作表）+ JSON 明細 ---
         import tempfile as _tmp
+        import zipfile as _zip
+        from xml.dom import minidom as _mdom
         from core.reporter import write_outputs
-        csv_p, json_p = write_outputs(results, os.path.join(_tmp.mkdtemp(), "it_single_MOCK.csv"))
-        _check(os.path.exists(csv_p) and os.path.exists(json_p),
-               "write_outputs 同時產生 CSV 與 JSON 明細")
+        single_summ = summarize(results)
+        xlsx_p, json_p = write_outputs(results, single_summ,
+                                       os.path.join(_tmp.mkdtemp(), "it_single_MOCK.xlsx"))
+        _check(xlsx_p.endswith(".xlsx") and os.path.exists(xlsx_p) and os.path.exists(json_p),
+               "write_outputs 產生 Excel 與 JSON")
+        with _zip.ZipFile(xlsx_p) as z:
+            names = z.namelist()
+            _check("xl/worksheets/sheet1.xml" in names and "xl/worksheets/sheet2.xml" in names,
+                   "Excel 含兩個工作表")
+            wb = z.read("xl/workbook.xml").decode("utf-8")
+            _check("統計摘要" in wb and "明細" in wb, "工作表名稱為 統計摘要 / 明細")
+            s1xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            _check("TTFT 首字(ms)" in s1xml and "端到端 e2e(s)" in s1xml,
+                   "統計摘要頁含各延遲指標列")
+            s2xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
+            _check("input_text" in s2xml and "output_text" in s2xml, "明細頁表頭含原本 CSV 欄位")
+            _check("raw_response" not in s2xml, "明細頁不含 raw_response（只進 JSON）")
+            # 各 XML 部位需為合法 XML（能被 Excel/LibreOffice 開）
+            for part in ("[Content_Types].xml", "xl/workbook.xml",
+                         "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"):
+                _mdom.parseString(z.read(part))
+        _check(True, "Excel 各 XML 部位皆為合法 XML")
         with open(json_p, encoding="utf-8") as _f:
             recs = _json.load(_f)
         _check(len(recs) == len(results) and bool(recs[0].get("output_text")),
@@ -128,11 +149,12 @@ def main():
         _check(all(r.error for r in fres), "每筆 failed 都帶 error 訊息")
         fsumm = summarize(fres, wall_seconds=fwall)
         _check(fsumm.failed == 5 and fsumm.success == 0, "彙總：failed=5、success=0")
-        # 成功＋失敗混在一起仍能輸出 CSV+JSON（驗證 reporter 對 failed 結果穩健）
+        # 成功＋失敗混在一起仍能輸出 Excel+JSON（驗證 reporter 對 failed 結果穩健）
         mixed = list(cres) + list(fres)
-        mcsv, mjson = write_outputs(mixed, os.path.join(_tmp.mkdtemp(), "it_mixed_MOCK.csv"))
-        _check(os.path.exists(mcsv) and os.path.exists(mjson),
-               "成功＋失敗混合結果仍能輸出 CSV+JSON")
+        mxlsx, mjson = write_outputs(mixed, summarize(mixed),
+                                     os.path.join(_tmp.mkdtemp(), "it_mixed_MOCK.xlsx"))
+        _check(os.path.exists(mxlsx) and os.path.exists(mjson),
+               "成功＋失敗混合結果仍能輸出 Excel+JSON")
 
         # --- GenericJSONAdapter（FR8/AC6）---
         print("[通用] GenericJSONAdapter -> /predict")
@@ -203,6 +225,41 @@ def main():
         _check(len(load_dataset_inputs(csv_hdr, 5)) == 5, "n=5 由 2 筆循環補滿")
         _check(load_dataset_inputs(csv_hdr, 5)[2] == p1[0], "循環補滿順序正確（第3筆回到第1筆）")
         _check(len(load_dataset_inputs(txt, 1)) == 1, "n=1 截斷至 1 筆")
+
+        # --- 多筆統計摘要（情境② 多併發級別）+ GPU 寫進統計摘要頁 ---
+        print("[Excel 摘要] 多 Summary（list）+ GpuStats 寫進第①頁各成區塊")
+        from core.gpu import GpuStats
+        gpu = GpuStats(util_mean=55.0, util_max=80.0, mem_mean_mb=1024.0, mem_max_mb=2048.0, samples=7)
+        mxl, _mjs = write_outputs(cres, [single_summ, summ],
+                                  os.path.join(_tmp.mkdtemp(), "it_levels_MOCK.xlsx"),
+                                  gpu_stats_list=[None, gpu])
+        with _zip.ZipFile(mxl) as z:
+            s1 = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            _mdom.parseString(z.read("xl/worksheets/sheet1.xml"))   # 多區塊仍為合法 XML
+        _check("it_single" in s1 and "it_concurrent" in s1, "統計摘要頁含多個 Summary 各自區塊")
+        _check("系統總吞吐" in s1 and "GPU" in s1, "有 wall/gpu 時含系統總吞吐與 GPU 列")
+        _check(">55<" in s1 or ">55.0<" in s1, "GpuStats 數值寫入第①頁")
+
+        # --- 進度條：render 到 StringIO、強制啟用，驗證內容與收尾換行 ---
+        print("[進度條] ProgressBar 渲染（StringIO、enabled=True）")
+        import io as _io
+        from core.progress import ProgressBar
+        buf = _io.StringIO()
+        bar = ProgressBar(4, label="it_bar 併發1", stream=buf, enabled=True, min_interval=0.0)
+        for k in range(1, 5):
+            bar.update(k, failed=(1 if k == 4 else 0))
+        bar.close()
+        out = buf.getvalue()
+        _check("█" in out and "░" in out, "進度條含已完成/未完成塊字元")
+        _check("100%" in out and "4/4" in out, "完成時顯示 100% 與 4/4")
+        _check("失敗1" in out, "有失敗時顯示失敗筆數")
+        _check(out.endswith("\n"), "close() 以換行收尾")
+        # non-TTY / total<=0 應完全靜默（no-op）
+        qbuf = _io.StringIO()
+        qbar = ProgressBar(0, stream=qbuf, enabled=True)
+        qbar.update(0)
+        qbar.close()
+        _check(qbuf.getvalue() == "", "total<=0 時進度條完全靜默")
 
         print("\n全部整合檢查通過 ✅")
     finally:

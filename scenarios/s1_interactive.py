@@ -48,10 +48,11 @@ def main():
     results = run_single(adapter, inputs, scenario="s1_interactive",
                          run_label=cfg.RUN_LABEL, max_tokens=args.max_tokens,
                          temperature=cfg.TEMPERATURE, stream=stream)
-    csv_path, json_path = write_outputs(results, output_path(cfg, "s1_interactive"))
-    print_summary(summarize(results))
-    print(f"明細 CSV：{csv_path}")
-    print(f"明細 JSON（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
+    summ = summarize(results)
+    print_summary(summ)
+    xlsx_path, json_path = write_outputs(results, summ, output_path(cfg, "s1_interactive"))
+    print(f"Excel 報表（第①頁統計摘要、第②頁明細）：{xlsx_path}")
+    print(f"JSON 明細（含輸入/思考內容/輸出內容/完整回應）：{json_path}")
 
 
 if __name__ == "__main__":

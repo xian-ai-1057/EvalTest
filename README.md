@@ -1,8 +1,9 @@
 # H100 vs RTX PRO 6000 通用測試程式
 
 評估 **RTX PRO 6000 (Blackwell) 能否取代目前跑在 H100 上的工作負載**。
-對推論/服務端點發出請求，量測延遲與吞吐，輸出**每一筆明細（CSV）+ 主控台平均/百分位摘要**，
-據以判斷是否達標並找出瓶頸。對應 `H100 vs PRO6000 通用測試情境表.xlsx`。
+對推論/服務端點發出請求，量測延遲與吞吐，輸出**一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）
+＋一個 JSON 完整明細 + 主控台平均/百分位摘要**，據以判斷是否達標並找出瓶頸。執行期間 stderr
+另有即時進度條（非 TTY 時自動靜默）。對應 `H100 vs PRO6000 通用測試情境表.xlsx`。
 
 - 規格文件（SDD）：`specs/001-h100-pro6000/`（`spec.md` / `plan.md` / `tasks.md`）
 - 設計原則：自製、簡潔、唯一第三方相依 `requests`；模型呼叫只走 HTTP。
@@ -46,7 +47,7 @@ python tests/test_integration.py
 | `python scenarios/s_vlm.py --images "data/images/*" --concurrency 1` | VLM 圖片→文本 | 單張延遲 / 吞吐（張/秒）|
 
 > 比較 H100 vs PRO 6000：把 `BASE_URL`/`MODEL` 指向各自端點，`RUN_LABEL` 標好（如 `H100-FP8`、`PRO6000-FP4`），
-> 各跑一輪，再並排比較產出的 CSV 與摘要。
+> 各跑一輪，再並排比較產出的 Excel 報表（第①頁統計摘要）與 JSON。
 
 ### 用自己的測試資料集當輸入（`--dataset`）
 情境 ①②③ 預設用「固定字元長度的合成 prompt」（比較時輸入長度一致、可控）。
@@ -62,11 +63,13 @@ python scenarios/s2_concurrency.py --dataset mydata.csv --concurrency 1,8,16,32 
 > ④BERT、⑥STT、VLM 走不同輸入型態（序列長度／音檔／圖片資料夾），不吃 `--dataset`。
 
 ## 輸出
-每次執行同時產生兩份明細（同檔名、不同副檔名）＋主控台摘要：
-- 每筆明細 **CSV**：`results/<情境>_<標籤>_<時間>.csv`
-  欄位含 TTFT/TPOT/e2e/tokens/字數/併發/標籤…，以及**原文**：`input_text`（輸入原文）、
-  `reasoning_text`（思考內容）、`output_text`（輸出內容），方便用試算表快速檢視。
-- 每筆明細 **JSON**：`results/<情境>_<標籤>_<時間>.json`
+每次執行同時產生一個 Excel 報表與一個 JSON（同檔名、不同副檔名）＋主控台摘要：
+- **Excel 報表**：`results/<情境>_<標籤>_<時間>.xlsx`（純標準庫手寫，不依賴 openpyxl）
+  - 第①頁 **統計摘要**：平均、P50/P90/P95/P99、min/max、系統總吞吐，以及（若開啟）GPU 使用率/記憶體；
+    版面對齊主控台那張表，情境②（多併發級別）每級各成一個區塊。
+  - 第②頁 **每筆明細**：欄位含 TTFT/TPOT/e2e/tokens/字數/併發/標籤…，以及**原文**：
+    `input_text`（輸入原文）、`reasoning_text`（思考內容）、`output_text`（輸出內容）。
+- **JSON 明細**：`results/<情境>_<標籤>_<時間>.json`
   保存每筆所有欄位，並額外含 `raw_response`（**完整原始回應**：串流為所有 chunk 清單、非串流為回應物件）。
 - 主控台摘要：平均、P50/P95/P99、系統總吞吐，以及（若開啟）GPU 使用率/記憶體。
 
@@ -147,9 +150,11 @@ config.py              # .env → 型別化 Config
 core/
   client.py            # make_adapter() 工廠 + OpenAIChatAdapter(串流) + GenericJSONAdapter
   custom_adapter_example.py
-  runner.py            # run_single / run_concurrent（ThreadPoolExecutor）
+  runner.py            # run_single / run_concurrent（ThreadPoolExecutor）＋執行期進度條
   metrics.py           # RequestResult + summarize()
-  reporter.py          # write_csv() / write_json() / write_outputs() + print_summary()
+  reporter.py          # write_outputs()（Excel 雙頁 + JSON）/ write_json() + print_summary()
+  xlsx.py              # 純標準庫手寫 .xlsx（zipfile + XML）
+  progress.py          # 執行期即時進度條（stderr，非 TTY 自動靜默）
   gpu.py               # GpuSampler（背景 nvidia-smi）
 scenarios/             # s1_interactive / s2_concurrency / s3_batch / s4_bert / s6_stt
 tests/                 # mock_server.py（假 OpenAI SSE）+ test_integration.py

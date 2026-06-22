@@ -1,30 +1,17 @@
-"""輸出：每筆明細寫 CSV + JSON、主控台印平均/百分位摘要。
+"""輸出：每次執行產生一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）＋一個 JSON 明細，
+並在主控台印平均/百分位摘要。
 
-CSV 走 field_names()（略過超長的 raw_response），保留可快速檢視的數值與原文欄位；
-JSON 明細則完整保存每筆所有欄位，含 raw_response（完整原始回應）。
+Excel 第②頁的欄位＝field_names()（略過超長的 raw_response）；JSON 明細則完整保存每筆所有
+欄位，含 raw_response（完整原始回應）。Excel 純標準庫手寫（見 core/xlsx.py），不引入第三方套件。
 """
 from __future__ import annotations
 
-import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
 
 from core.metrics import Summary, field_names
-
-
-def write_csv(results: list, path: str) -> str:
-    """把每一筆 RequestResult 寫成 CSV（欄位＝field_names()，含輸入/思考/輸出原文）。回傳實際路徑。"""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    cols = field_names()
-    with p.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=cols)
-        writer.writeheader()
-        for r in results:
-            row = asdict(r)
-            writer.writerow({k: ("" if row[k] is None else row[k]) for k in cols})
-    return str(p)
+from core.xlsx import write_workbook
 
 
 def write_json(results: list, path: str) -> str:
@@ -49,15 +36,88 @@ def write_json(results: list, path: str) -> str:
     return str(p)
 
 
-def write_outputs(results: list, csv_path: str):
-    """同時輸出 CSV 明細與 JSON 明細（JSON 為 CSV 同名改 .json）。回傳 (csv_path, json_path)。
+# 統計摘要頁的延遲/速率指標列（標籤 → Summary 屬性名 → 顯示小數位，對齊主控台精度）
+_SUMMARY_METRICS = (
+    ("TTFT 首字(ms)", "ttft_ms", 2),
+    ("TPOT 逐字(ms/字)", "tpot_ms", 3),
+    ("端到端 e2e(s)", "e2e_s", 3),
+    ("單請求 tok/s", "tokens_per_s", 2),
+    ("單請求 字/s", "chars_per_s", 2),
+)
 
-    情境腳本統一呼叫這支：CSV 供快速檢視（含輸入/思考內容/輸出內容原文），
-    JSON 供保存完整原始回應（raw_response）。
+
+def _round(v, nd):
+    """四捨五入到 nd 位；None 維持 None（儲存格留空）。完整精度仍保留在明細頁與 JSON。"""
+    return None if v is None else round(v, nd)
+
+
+def _summary_sheet_rows(summaries, gpus) -> list:
+    """把一或多個 Summary（+選用 GpuStats）排成「統計摘要」頁的列。
+
+    版面對齊主控台那張表：每個 Summary 一個區塊（情境/標籤/併發 → 請求數 → 指標表 →
+    系統總吞吐 → GPU），多個區塊之間空一列分隔。指標表為 指標×(n/mean/p50/p90/p95/p99/min/max)，
+    數值依主控台精度四捨五入（完整精度保留在第②頁明細與 JSON）。
     """
-    csv_out = write_csv(results, csv_path)
-    json_out = write_json(results, str(Path(csv_path).with_suffix(".json")))
-    return csv_out, json_out
+    rows = []
+    for idx, (s, g) in enumerate(zip(summaries, gpus)):
+        if idx:
+            rows.append([])                          # 多個 Summary 之間空一列
+        rows.append(["情境", s.scenario, "標籤", s.run_label, "併發", s.concurrency])
+        rows.append(["請求數", s.count, "成功", s.success, "失敗", s.failed,
+                     "成功率(%)", round(s.success_rate * 100, 1),
+                     "牆鐘(s)", _round(s.wall_seconds, 2)])
+        rows.append(["指標", "n", "mean", "p50", "p90", "p95", "p99", "min", "max"])
+        for label, attr, nd in _SUMMARY_METRICS:
+            st = getattr(s, attr)
+            rows.append([label, st.n,
+                         _round(st.mean, nd), _round(st.p50, nd), _round(st.p90, nd),
+                         _round(st.p95, nd), _round(st.p99, nd),
+                         _round(st.minimum, nd), _round(st.maximum, nd)])
+        if s.throughput_tokens_per_s is not None:
+            rows.append(["系統總吞吐", "tokens/s", _round(s.throughput_tokens_per_s, 2),
+                         "chars/s", _round(s.throughput_chars_per_s, 2),
+                         "Σtokens", s.total_output_tokens, "Σchars", s.total_output_chars])
+        if g is not None:
+            rows.append(["GPU", "使用率mean(%)", _round(g.util_mean, 2), "max(%)", _round(g.util_max, 2),
+                         "記憶體mean(MB)", _round(g.mem_mean_mb, 2), "max(MB)", _round(g.mem_max_mb, 2),
+                         "samples", g.samples])
+    return rows
+
+
+def _detail_sheet_rows(results) -> list:
+    """把每筆 RequestResult 排成「明細」頁的列（表頭＝field_names()，略過 raw_response）。"""
+    cols = field_names()
+    rows = [list(cols)]
+    for r in results:
+        d = asdict(r)
+        rows.append([d[c] for c in cols])            # 保留原型別，數值維持數字格
+    return rows
+
+
+def write_outputs(results: list, summaries, base_path: str, *, gpu_stats_list=None):
+    """輸出一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）＋一個 JSON 明細。
+
+    回傳 (xlsx_path, json_path)。情境腳本統一呼叫這支。
+    summaries：單一 Summary 或 list[Summary]（如情境② 多併發級別各一筆，於第①頁各成一區塊）。
+    gpu_stats_list：對齊每個 summary 的 GpuStats（可含 None；長度需與 summaries 一致）。
+    JSON 為完整每筆明細（含 raw_response，便於檢視思考/輸出/usage）。
+    """
+    if isinstance(summaries, Summary):
+        summaries = [summaries]
+    summaries = list(summaries)
+    gpus = list(gpu_stats_list) if gpu_stats_list is not None else [None] * len(summaries)
+
+    base = Path(base_path)
+    xlsx_path = base.with_suffix(".xlsx")
+    json_path = base.with_suffix(".json")
+    xlsx_path.parent.mkdir(parents=True, exist_ok=True)
+
+    write_workbook(str(xlsx_path), [
+        ("統計摘要", _summary_sheet_rows(summaries, gpus)),
+        ("明細", _detail_sheet_rows(results)),
+    ])
+    json_out = write_json(results, str(json_path))
+    return str(xlsx_path), json_out
 
 
 def _fmt(v, nd=2):
