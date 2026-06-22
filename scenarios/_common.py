@@ -106,3 +106,18 @@ def output_path(cfg, scenario: str) -> str:
     ts = time.strftime("%Y%m%d-%H%M%S")
     label = (cfg.RUN_LABEL or "run").replace("/", "_").replace(" ", "")
     return os.path.join(cfg.OUTPUT_DIR, f"{scenario}_{label}_{ts}.csv")
+
+
+def add_stream_flag(ap) -> None:
+    """加上 --stream / --no-stream（互斥）。預設 None＝沿用 .env 的 STREAM。"""
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--stream", dest="stream", action="store_true",
+                   help="強制使用串流（量 TTFT/TPOT）；預設沿用 .env STREAM")
+    g.add_argument("--no-stream", dest="stream", action="store_false",
+                   help="強制關閉串流（無 TTFT/TPOT）")
+    ap.set_defaults(stream=None)
+
+
+def resolve_stream(args, cfg) -> bool:
+    """CLI 未指定（None）時沿用 .env 的 STREAM，否則以 CLI 為準。"""
+    return cfg.STREAM if getattr(args, "stream", None) is None else args.stream

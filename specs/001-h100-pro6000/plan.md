@@ -56,7 +56,8 @@ SSE 逐行解析：送出前記 `t0` → 首個內容 chunk = **TTFT**；累積�
 （送 `stream_options.include_usage=true`），無則以 chunk 數 / 字元數回退；同時記 `output_chars`
 對應 Excel 的「每秒字數、毫秒/字」。
 另一併擷取原文：`delta.content` 累積為 `output_text`、`delta.reasoning_content`（相容 `reasoning`）
-累積為 `reasoning_text`、輸入存 `input_text`、整段串流原始 chunk 存 `raw_response`；非串流則取
+累積為 `reasoning_text`、輸入存 `input_text`、串流彙整成單一最終結果物件（仿完成物件，含
+content/reasoning/usage/finish_reason，不逐 chunk）存 `raw_response`；非串流則取
 `message.content` / `message.reasoning_content` 與整個回應物件。
 推理模型的 reasoning 與 content 都視為「已生成輸出」：TTFT 取第一個 token（不分思考/內容）、
 TPOT 與 tokens_per_s/chars_per_s 及 `output_tokens`/`output_chars` 皆涵蓋兩者，與

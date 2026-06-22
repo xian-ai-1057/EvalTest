@@ -11,7 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scenarios._common import load_dataset_inputs, make_inputs, output_path
+from scenarios._common import (add_stream_flag, load_dataset_inputs, make_inputs,
+                               output_path, resolve_stream)
 from config import Config
 from core.client import make_adapter
 from core.metrics import summarize
@@ -30,7 +31,7 @@ def main():
     ap.add_argument("--dataset", default="",
                     help="從檔案讀 prompt 當輸入（.csv 取 prompt 欄/第一欄；.txt 一行一個）。"
                          "給了就覆蓋合成輸入；不足 --n 會循環補滿")
-    ap.add_argument("--no-stream", action="store_true", help="關閉串流（將無法量 TTFT/TPOT）")
+    add_stream_flag(ap)
     args = ap.parse_args()
     cfg.RUN_LABEL = args.label
 
@@ -41,7 +42,7 @@ def main():
     else:
         inputs = make_inputs(args.n, args.input_len)
         src = f"輸入長度={args.input_len}"
-    stream = not args.no_stream
+    stream = resolve_stream(args, cfg)
     print(f"情境① 互動式生成 | n={len(inputs)} 併發=1 {src} "
           f"max_tokens={args.max_tokens} stream={stream} 標籤={cfg.RUN_LABEL}")
 

@@ -96,8 +96,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(obj)}\n\n".encode("utf-8"))
             self.wfile.flush()
 
-        # 首包：角色
-        send({"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
+        # 首包：角色（附回應層級中繼資料，模擬真實串流）
+        send({"id": "mock-1", "object": "chat.completion.chunk", "created": 0, "model": "mock",
+              "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
         time.sleep(TTFT_DELAY)
         # 思考內容（reasoning_content）先於正式內容串出，模擬推理模型
         for i, rtok in enumerate(reason_tokens):
