@@ -3,7 +3,10 @@
 支援：
   POST /v1/chat/completions  —— stream=true 時以 SSE 逐 token 串流（先吐 reasoning_content 思考內容、
                                 再吐 content，含末包 usage）；否則回單一 JSON（含 reasoning_content）。
-  POST /predict              —— 給 GenericJSONAdapter 測試用，回 {"output": "..."}。
+  POST /predict              —— 非 OpenAI 回應測試用，回 {"output": "..."}。
+  POST /api/eval             —— 客服評分服務範例用（examples/call_eval_service.py）：吃
+                                {pid,text,call_type,…}，依 call_type 每個代號回一筆評分
+                                （Column1…Service_status），整包為 JSON 陣列。
 
 可獨立執行：  python tests/mock_server.py --port 8000
 亦可被測試以 start_in_thread() 在背景啟動。
@@ -52,6 +55,8 @@ class Handler(BaseHTTPRequestHandler):
             self._chat()
         elif self.path.startswith("/predict"):
             self._predict()
+        elif self.path.startswith("/api/eval"):
+            self._eval()
         else:
             self.send_error(404, "not found")
 
@@ -123,6 +128,27 @@ class Handler(BaseHTTPRequestHandler):
         _ = self._read_json()
         time.sleep(TTFT_DELAY)
         data = json.dumps({"output": "label_A"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _eval(self):
+        """模擬客服評分服務：吃 {pid,text,call_type,…}，依 call_type（以 "^" 切）每個代號回一筆
+        評分；整包以 JSON 陣列回傳。前面 sleep 讓端到端 e2e 非零、可被量測。"""
+        body = self._read_json()
+        codes = [c for c in str(body.get("call_type", "")).split("^") if c] or ["代號1"]
+        time.sleep(TTFT_DELAY)
+        arr = [{
+            "Column1": code,
+            "Column2": ["合格"] * 6,
+            "Column3": ["開場白", "結尾語", "等候與轉接", "建立期望值", "抱怨應對", "客訴"],
+            "Column4": [""] * 6,
+            "Column5": ["XXX"] * 6,
+            "Service_status": ["100"],
+        } for code in codes]
+        data = json.dumps(arr, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))

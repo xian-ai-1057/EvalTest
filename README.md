@@ -65,6 +65,16 @@ python simple_bench.py
 
 `N_REQUESTS` 決定總筆數：資料集**不足會循環補滿、過多會截斷**。帶 `answer` 的每筆，正解會一併寫進輸出明細與 JSON 的 `answer` 欄，供 `accuracy.py` 比對。
 
+### 打非 OpenAI 服務（自訂 body／端點／回應）
+
+要打的服務若請求 body、端點路徑、或回應格式跟 OpenAI 不同，用設定區的三個掛勾即可（非串流時量端到端 e2e）：
+
+- `API_PATH`：端點路徑（如 `/api/classify`）。
+- `BODY_BUILDER`：整包自訂請求 body，簽章同 `core.payload.build_body`。
+- `RESPONSE_PARSER`：收原始 `requests.Response`，回 `{output_text, output_tokens?, reasoning_text?}`。
+
+完整可執行範例見 [`examples/call_eval_service.py`](examples/call_eval_service.py)：示範打一個吃 `{pid, text, call_type, …}`、回 JSON 陣列評分的客服評分服務（`python examples/call_eval_service.py`，可對 `tests/mock_server.py` 的 `/api/eval` 試跑）。
+
 ---
 
 ## `accuracy.py` — 算準確率

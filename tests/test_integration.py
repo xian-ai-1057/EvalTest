@@ -133,6 +133,19 @@ def main():
                "自訂服務量到 e2e、TTFT 留空（非串流）")
         _check(gres[0].answer == "label_A", "answer 正確帶入（可供 accuracy 比對）")
 
+        # --- 真實範例：客服評分服務（examples/call_eval_service.py，自訂 body + 陣列回應）---
+        from examples.call_eval_service import build_eval_body, parse_eval_response
+        ev, _ew = run_benchmark([("客戶 0.0 4.83 XXXXXX坐席: 1.0 5.0 樣本", "")],
+                                _cfg(model="(n/a)", stream=False, api_path="/api/eval",
+                                     body_builder=build_eval_body, response_parser=parse_eval_response))
+        _check(len(ev) == 1 and ev[0].success, "評分服務範例：請求成功")
+        arr = json.loads(ev[0].output_text)
+        _check(isinstance(arr, list) and arr and arr[0].get("Column1") == "代號1",
+               "parse_eval_response：output_text 為陣列 JSON（含 Column1）")
+        _check(len(arr) == 2, "回應依 call_type（代號1^代號2）帶回兩個代號")
+        _check(ev[0].e2e_s is not None and ev[0].ttft_ms is None,
+               "評分服務量到 e2e、TTFT 留空（非串流）")
+
         # --- build_report：直接驗 dict 結構 ---
         rep = build_report(sres, ssumm, params={"MODEL": "mock"})
         _check(set(rep.keys()) == {"summary", "params", "detail"} and len(rep["detail"]) == 3,
