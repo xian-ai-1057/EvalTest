@@ -1,7 +1,7 @@
 # H100 vs RTX PRO 6000 跑分（最簡化版）
 
 自製的推論跑分小工具，用來評估 **RTX PRO 6000 (Blackwell) 能否取代目前跑在 H100 上的推論工作負載**。
-直接用 `requests` 對 OpenAI 相容的 `/v1/chat/completions` 發請求，量測延遲與吞吐，輸出可直接判讀達標與否的報表。
+直接用 `requests` 對 OpenAI 相容（或自訂）的 chat 端點發請求，量測延遲與吞吐，輸出可直接判讀達標與否的報表。
 
 專案只有兩支工具：
 
@@ -10,11 +10,11 @@
 
 每次跑 `simple_bench.py` 產生：
 
-- **一個 Excel 報表**（`.xlsx`，純標準庫手寫、不依賴 openpyxl）：第①頁＝統計摘要、第②頁＝每筆明細、第③頁＝本次執行參數。
-- **一個 JSON 明細**（與 `.xlsx` 同檔名）：每筆所有欄位 ＋ 完整原始回應 `raw_response`。
+- **一個 Excel 報表**（`.xlsx`，用 pandas + openpyxl 寫）：第①頁＝統計摘要、第②頁＝每筆明細（pandas 轉換）、第③頁＝本次執行參數。
+- **一個 JSON**（與 `.xlsx` 同檔名）：一個結構化 dict —— `{summary, params, detail}`；`detail` 是每筆所有欄位 ＋ 完整原始回應 `raw_response`，也是 `accuracy.py` 讀的對象。
 - **主控台摘要**：平均／百分位／系統總吞吐。
 
-設計原則：**唯一第三方相依 `requests`**，其餘只用 Python 標準庫；目標 **Python 3.12**（亦相容 3.11）。非生產專案——以「拿到數字、找出瓶頸」為目標。
+設計原則：第三方相依只有 **`requests` ＋ `pandas` ＋ `openpyxl`**（pandas/openpyxl 僅用於輸出）；其餘只用 Python 標準庫（metrics 自算百分位、`accuracy.py` 的 `.xlsx` 仍由 `core/xlsx.py` 手寫、測試為純斷言腳本）；目標 **Python 3.12**（亦相容 3.11）。非生產專案——以「拿到數字、找出瓶頸」為目標。
 
 > 程式碼註解、docstring 與主控台字串一律使用**繁體中文**；修改時請沿用此慣例。
 
@@ -23,7 +23,7 @@
 ## 安裝
 
 ```bash
-pip install -r requirements.txt        # 只有 requests
+pip install -r requirements.txt        # requests + pandas + openpyxl
 ```
 
 無需 `.env`、無需設定檔——所有參數都在各檔案頂部的「參數設定區」用 Python 變數調整。
@@ -40,7 +40,8 @@ python simple_bench.py
 
 | 參數 | 預設 | 說明 |
 |------|------|------|
-| `BASE_URL` | `http://127.0.0.1:8000` | 伺服器根；自動接 `/v1/chat/completions` |
+| `BASE_URL` | `http://127.0.0.1:8000` | 伺服器根；自動接 `API_PATH` |
+| `API_PATH` | `/v1/chat/completions` | 端點路徑（接在 `BASE_URL` 後）；打非 OpenAI 服務時改這個 |
 | `MODEL` | `test-model` | 模型名稱 |
 | `API_KEY` | （空） | 需要時填，會以 `Authorization: Bearer` 帶上 |
 | `RUN_LABEL` | `H100-FP8` | 報表標籤，跨卡比較用（如 `H100-FP8` / `PRO6000-FP4`） |
@@ -117,9 +118,9 @@ results/simple_<標籤>_<時間戳>.json     # 同檔名、不同副檔名
 
 時間戳為 `YYYYMMDD-HHMMSS`；`results/` 已被 gitignore。
 
-### Excel 第②頁「明細」／ JSON
+### JSON 結構 ／ Excel 第②頁「明細」
 
-每筆一列，欄序＝`RequestResult`（`core/metrics.py`）的**欄位宣告順序**：
+JSON 最外層是一個 dict：`{summary, params, detail}`（`summary`＝統計、`params`＝執行參數、`detail`＝每筆明細陣列）；`accuracy.py` 會自動取其 `detail`。下表為 `detail` 每筆（＝Excel 第②頁每列）的欄位，欄序＝`RequestResult`（`core/metrics.py`）的**欄位宣告順序**：
 
 | 欄位 | 意義 |
 |------|------|
@@ -143,7 +144,7 @@ results/simple_<標籤>_<時間戳>.json     # 同檔名、不同副檔名
 | `output_text` | 輸出內容（最終回覆文字） |
 | `answer` | 正解（`DATASET` 帶答案時填入，供 `accuracy.py` 比對） |
 
-**`raw_response`（完整原始回應）只進 JSON、不進 Excel 明細**（標記 `metadata={"csv": False}`）：JSON 會試著還原成巢狀物件，便於檢視思考/輸出/usage。
+**`raw_response`（完整原始回應）只進 JSON 的 `detail`、不進 Excel 明細**（標記 `metadata={"csv": False}`）：JSON 會試著還原成巢狀物件，便於檢視思考/輸出/usage。
 
 ### 指標怎麼判讀
 
@@ -172,13 +173,18 @@ results/simple_<標籤>_<時間戳>.json     # 同檔名、不同副檔名
 ## 架構地圖
 
 ```
-simple_bench.py     # 主工具：requests 內聯呼叫 + 計時(TTFT/TPOT/e2e) + 並發 → 報表
-accuracy.py         # 伴隨工具：讀產出做完全相等比對、算準確率
+simple_bench.py     # 薄入口：參數設定區 + 線性 main() 管線（串接 core/ 各模組）
+accuracy.py         # 伴隨工具：讀產出 JSON 的 detail 做完全相等比對、算準確率（用 core/xlsx.py）
 core/
+  config.py         # BenchConfig（設定 dataclass）+ as_params()
+  dataset.py        # build_prompt / load_dataset / build_pairs（組輸入）
+  payload.py        # build_body（OpenAI 相容 body；可被 BODY_BUILDER 取代）
+  client.py         # call()：純 HTTP 呼叫 + SSE/單發解碼（不組 body）
+  runner.py         # run_benchmark()：組 body → client.call → 並發 + stamp
   metrics.py        # RequestResult（單筆契約）+ Summary + summarize()
-  reporter.py       # write_outputs()（Excel 多頁 + JSON）/ print_summary()
-  xlsx.py           # 純標準庫手寫 .xlsx（zipfile + XML，不依賴 openpyxl）
+  reporter.py       # build_report()→dict / write_outputs()（pandas→Excel + JSON）/ print_summary()
+  xlsx.py           # 純標準庫手寫 .xlsx（zipfile + XML）—— 現只給 accuracy.py 用
 tests/
   mock_server.py    # 假 OpenAI SSE 伺服器（純標準庫），無 GPU 也能驗證
-  test_integration.py  # simple_bench + accuracy 煙霧測試（單一斷言腳本）
+  test_integration.py  # 重構後管線 + accuracy 煙霧測試（單一斷言腳本）
 ```

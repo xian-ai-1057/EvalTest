@@ -1,8 +1,11 @@
-"""輸出：每次執行產生一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）＋一個 JSON 明細，
+# -*- coding: utf-8 -*-
+"""輸出：每次執行產生一個結構化 JSON dict（{summary, params, detail}）＋一個三頁 Excel，
 並在主控台印平均/百分位摘要。
 
-Excel 第②頁的欄位＝field_names()（略過超長的 raw_response）；JSON 明細則完整保存每筆所有
-欄位，含 raw_response（完整原始回應）。Excel 純標準庫手寫（見 core/xlsx.py），不引入第三方套件。
+「輸出結果」就是 build_report() 回傳的那個 dict：第一層 summary（統計）、params（執行參數）、
+detail（逐筆明細，含完整原始回應 raw_response，會試還原成巢狀物件）。這份 dict 直接寫成 JSON，
+也是 accuracy.py 讀的對象（取 detail）。Excel 第②頁「明細」用 pandas 轉換（DataFrame → openpyxl），
+不再每種輸出各寫一套序列化。
 """
 from __future__ import annotations
 
@@ -10,30 +13,9 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import pandas as pd
+
 from core.metrics import Summary, field_names
-from core.xlsx import write_workbook
-
-
-def write_json(results: list, path: str) -> str:
-    """把每一筆 RequestResult 寫成 JSON 明細（含完整原始回應 raw_response）。回傳實際路徑。
-
-    raw_response 會試著還原成巢狀 JSON 物件，便於檢視思考/輸出/usage 等；無法解析則保留原字串。
-    """
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    records = []
-    for r in results:
-        row = asdict(r)
-        raw = row.get("raw_response")
-        if raw:
-            try:
-                row["raw_response"] = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                pass  # 無法解析就保留原字串
-        records.append(row)
-    with p.open("w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
-    return str(p)
 
 
 # 統計摘要頁的延遲/速率指標列（標籤 → Summary 屬性名 → 顯示小數位，對齊主控台精度）
@@ -49,6 +31,32 @@ _SUMMARY_METRICS = (
 def _round(v, nd):
     """四捨五入到 nd 位；None 維持 None（儲存格留空）。完整精度仍保留在明細頁與 JSON。"""
     return None if v is None else round(v, nd)
+
+
+def build_report(results, summary, params=None) -> dict:
+    """組「輸出結果」dict：{summary, params, detail}。
+
+    summary：asdict(Summary)（含巢狀 Stat）。params：dict（list[(k,v)] 會轉成 dict）。
+    detail：逐筆 asdict（含 raw_response，會試以 json.loads 還原成巢狀物件，便於檢視思考/輸出/usage）。
+    明細刻意走 asdict、不經 DataFrame，避免 pandas 把 None→NaN（非法 JSON）或把 int 欄上轉 float。
+    """
+    records = []
+    for r in results:
+        row = asdict(r)
+        raw = row.get("raw_response")
+        if raw:
+            try:
+                row["raw_response"] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass  # 無法解析就保留原字串
+        records.append(row)
+    if params is None:
+        params_out = {}
+    elif isinstance(params, dict):
+        params_out = dict(params)
+    else:
+        params_out = {str(k): v for k, v in params}
+    return {"summary": asdict(summary), "params": params_out, "detail": records}
 
 
 def _summary_sheet_rows(summaries, gpus) -> list:
@@ -84,20 +92,10 @@ def _summary_sheet_rows(summaries, gpus) -> list:
     return rows
 
 
-def _detail_sheet_rows(results) -> list:
-    """把每筆 RequestResult 排成「明細」頁的列（表頭＝field_names()，略過 raw_response）。"""
-    cols = field_names()
-    rows = [list(cols)]
-    for r in results:
-        d = asdict(r)
-        rows.append([d[c] for c in cols])            # 保留原型別，數值維持數字格
-    return rows
-
-
 def _params_rows(params) -> list:
     """把執行參數排成「執行參數」頁的列（表頭＝參數 / 值）。
 
-    params 可為 dict 或 [(key, value), …]；值保留原型別（bool / 數值由 xlsx 寫成對應儲存格格式）。
+    params 可為 dict 或 [(key, value), …]；值保留原型別（bool / 數值由 openpyxl 寫成對應儲存格格式）。
     """
     items = params.items() if isinstance(params, dict) else params
     rows = [["參數", "值"]]
@@ -106,34 +104,41 @@ def _params_rows(params) -> list:
     return rows
 
 
-def write_outputs(results: list, summaries, base_path: str, *, gpu_stats_list=None, params=None):
-    """輸出一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）＋一個 JSON 明細。
+def _rect(rows) -> list:
+    """把不規則列補成等寬（缺格填 None），讓 pandas 能直接建表。"""
+    width = max((len(r) for r in rows), default=0)
+    return [list(r) + [None] * (width - len(r)) for r in rows]
 
-    回傳 (xlsx_path, json_path)。情境腳本統一呼叫這支。
-    summaries：單一 Summary 或 list[Summary]（如情境② 多併發級別各一筆，於第①頁各成一區塊）。
-    gpu_stats_list：對齊每個 summary 的 GpuStats（可含 None；長度需與 summaries 一致）。
-    params：選用，dict 或 [(key, value), …]；有值時於 Excel 末尾多一頁「執行參數」（不影響 JSON）。
-    JSON 為完整每筆明細（含 raw_response，便於檢視思考/輸出/usage）。
+
+def write_outputs(results, summary, base_path, *, params=None):
+    """輸出一個結構化 JSON dict（{summary, params, detail}）＋一個三頁 Excel。回傳 (xlsx, json)。
+
+    JSON 由 build_report 產生（明細走 asdict、不經 DataFrame）。Excel 用 pandas(openpyxl) 寫：
+    第①頁統計摘要、第②頁明細（pandas 轉換、略過超長的 raw_response）、第③頁執行參數（有 params 才寫）。
     """
-    if isinstance(summaries, Summary):
-        summaries = [summaries]
-    summaries = list(summaries)
-    gpus = list(gpu_stats_list) if gpu_stats_list is not None else [None] * len(summaries)
+    report = build_report(results, summary, params)
 
     base = Path(base_path)
     xlsx_path = base.with_suffix(".xlsx")
     json_path = base.with_suffix(".json")
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sheets = [
-        ("統計摘要", _summary_sheet_rows(summaries, gpus)),
-        ("明細", _detail_sheet_rows(results)),
-    ]
-    if params:
-        sheets.append(("執行參數", _params_rows(params)))   # 選用第③頁：本次執行參數
-    write_workbook(str(xlsx_path), sheets)
-    json_out = write_json(results, str(json_path))
-    return str(xlsx_path), json_out
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    # 第②頁「明細」：用 pandas 轉換；表頭＝field_names()（略過 raw_response）。
+    # astype(object).where(notna, None)：保住整數顯示、缺值留空（避免 pandas 的 NaN/float 化）。
+    detail_df = pd.DataFrame(report["detail"], columns=field_names()).astype(object)
+    detail_df = detail_df.where(detail_df.notna(), None)
+    # 第①頁「統計摘要」：沿用既有版面（不規則列補成等寬）。
+    summary_df = pd.DataFrame(_rect(_summary_sheet_rows([summary], [None])))
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as xw:
+        summary_df.to_excel(xw, sheet_name="統計摘要", index=False, header=False)
+        detail_df.to_excel(xw, sheet_name="明細", index=False)
+        if params:
+            params_df = pd.DataFrame(_rect(_params_rows(report["params"])))
+            params_df.to_excel(xw, sheet_name="執行參數", index=False, header=False)
+    return str(xlsx_path), str(json_path)
 
 
 def _fmt(v, nd=2):
