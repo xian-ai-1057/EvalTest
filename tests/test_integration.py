@@ -101,6 +101,22 @@ def main():
                .get("chat_template_kwargs") == {"enable_thinking": True},
                "通用版 _build_body 不受影響（預設行為不變）")
 
+        # --- 完全自訂服務：自訂端點 /predict + 自訂 body + 自訂回應解析（非串流、量 e2e）---
+        def _gen_body(prompt, *, model, max_tokens, temperature, stream, reasoning):
+            return {"pid": "X1", "skill_type": "A_Bank", "text": str(prompt)}   # 整包非 OpenAI 格式
+        def _gen_parse(resp):
+            obj = resp.json()                       # mock /predict 回 {"output": "label_A"}
+            return {"output_text": str(obj.get("output", "")), "output_tokens": None}
+        gres, _gw = run_concurrent_simple([("客戶語音轉錄…", "label_A")], 1,
+                                          base_url=base, model="x", stream=False,
+                                          api_path="/predict", body_builder=_gen_body,
+                                          response_parser=_gen_parse, progress=False)
+        _check(len(gres) == 1 and gres[0].success, "自訂端點+body+回應解析：請求成功")
+        _check(gres[0].output_text == "label_A", "RESPONSE_PARSER 取到 output_text=label_A")
+        _check(gres[0].e2e_s is not None and gres[0].ttft_ms is None,
+               "自訂服務量到 e2e、TTFT 留空（非串流）")
+        _check(gres[0].answer == "label_A", "answer 正確帶入（可供 accuracy 比對）")
+
         # --- 執行參數寫進 Excel 第③頁「執行參數」（params 為選用、向後相容）---
         px, _pj = write_outputs(sres, ssumm, os.path.join(tempfile.mkdtemp(), "it_params_MOCK.xlsx"),
                                 params=[("MODEL", "mock"), ("CONCURRENCY", 2),

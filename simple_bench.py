@@ -35,7 +35,8 @@ from core.reporter import print_summary, write_outputs     # noqa: E402
 
 
 # ===== 參數設定區（改這裡就好；執行：python simple_bench.py）=====
-BASE_URL = "http://127.0.0.1:8000"    # 伺服器根；自動補 /v1/chat/completions
+BASE_URL = "http://127.0.0.1:8000"    # 伺服器根；自動接 API_PATH
+API_PATH = "/v1/chat/completions"     # 端點路徑（接在 BASE_URL 後）；打非 OpenAI 服務時改這個，如 /api/classify
 MODEL = "test-model"                  # 模型名稱
 API_KEY = ""                          # 需要時填 Bearer token
 RUN_LABEL = "H100-FP8"                # 報表標籤（跨卡比較用，如 H100-FP8 / PRO6000-FP4）
@@ -55,6 +56,10 @@ REQUEST_TIMEOUT = 60.0                # 單請求逾時（秒）
 # 回傳整包 dict（含 messages / model…）。注意：是否串流由設定區 STREAM 決定，
 # 你的 body["stream"] 請跟著傳入的 stream 參數設，否則回應解析（串流/非串流）會對不上。
 BODY_BUILDER = None
+# 自訂回應解析：None＝照 OpenAI 解（choices[].message.content、usage）。打回應非 OpenAI 格式的
+# 服務時指定函式：收到原始 requests.Response，回傳 dict（至少 output_text，選填 output_tokens /
+# reasoning_text）。僅適用非串流（STREAM=False），量端到端 e2e（TTFT/TPOT 留空）。
+RESPONSE_PARSER = None
 # ===============================================================
 
 SCENARIO = "simple_bench"
@@ -160,16 +165,18 @@ def _build_body(prompt, *, model, max_tokens, temperature, stream, reasoning):
 
 def chat_once(prompt, *, base_url, model, api_key="", max_tokens=256,
               temperature=0.0, stream=True, reasoning=True, timeout=60.0,
-              body_builder=None) -> RequestResult:
-    """打一次 OpenAI 相容 /v1/chat/completions，回傳量測結果 RequestResult。
+              body_builder=None, response_parser=None,
+              api_path="/v1/chat/completions") -> RequestResult:
+    """打一次 OpenAI 相容（或自訂）chat 端點，回傳量測結果 RequestResult。
 
-    串流（stream=True）量 TTFT/TPOT；非串流只量端到端 e2e。reasoning 控制思考模式
-    （chat_template_kwargs.enable_thinking）。body_builder 指定時改用它整包組 body
-    （取代通用版 _build_body，供 body 結構不同的服務）。思考內容 reasoning_content
-    （相容 reasoning）與正式 content 都計入字數 / token 數 / 計時，與 usage.completion_tokens
-    一致。任何連線 / HTTP / JSON 解析錯誤都記為 success=False、填 error，不拋出（不讓單筆拖垮整批）。
+    端點為 base_url + api_path。串流（stream=True）量 TTFT/TPOT；非串流只量端到端 e2e。
+    reasoning 控制思考模式（chat_template_kwargs.enable_thinking）。body_builder 指定時改用它
+    整包組 body（取代通用版 _build_body）；response_parser 指定時改用它解析非 OpenAI 格式的回應
+    （僅非串流）。思考內容 reasoning_content（相容 reasoning）與正式 content 都計入字數 / token 數
+    / 計時，與 usage.completion_tokens 一致。任何連線 / HTTP / JSON 解析錯誤都記為 success=False、
+    填 error，不拋出（不讓單筆拖垮整批）。
     """
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    url = base_url.rstrip("/") + api_path
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -184,7 +191,7 @@ def chat_once(prompt, *, base_url, model, api_key="", max_tokens=256,
         if stream:
             _decode_stream(url, headers, body, t0, r, timeout)
         else:
-            _decode_once(url, headers, body, t0, r, timeout)
+            _decode_once(url, headers, body, t0, r, timeout, response_parser=response_parser)
     except (requests.RequestException, ValueError) as exc:
         r.success = False
         r.error = f"{type(exc).__name__}: {exc}"
@@ -271,27 +278,38 @@ def _decode_stream(url, headers, body, t0, r: RequestResult, timeout):
     r.chars_per_s = _rate(r.output_chars, decode_s)
 
 
-def _decode_once(url, headers, body, t0, r: RequestResult, timeout):
-    """非串流：單發取回完整回應，只量端到端 e2e（無法量 TTFT/TPOT）。"""
+def _decode_once(url, headers, body, t0, r: RequestResult, timeout, response_parser=None):
+    """非串流：單發取回完整回應，只量端到端 e2e（無法量 TTFT/TPOT）。
+
+    response_parser=None 照 OpenAI 解（choices[].message.content、usage）；指定時改用它解析
+    回應非 OpenAI 格式的服務 —— 收到原始 requests.Response，回傳 dict（至少 output_text，
+    選填 output_tokens / reasoning_text）。
+    """
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     r.status_code = resp.status_code
     resp.raise_for_status()
     t_end = time.perf_counter()
-    obj = resp.json()
-    text = reasoning = ""
-    choices = obj.get("choices") or []
-    if choices:
-        msg = choices[0].get("message") or {}
-        text = msg.get("content", "") or ""
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
-    usage = obj.get("usage") or {}
+    if response_parser is not None:                      # 自訂服務：整包交給使用者解析
+        parsed = response_parser(resp) or {}
+        text = str(parsed.get("output_text", "") or "")
+        reasoning = str(parsed.get("reasoning_text", "") or "")
+        r.output_tokens = parsed.get("output_tokens")
+        r.raw_response = resp.text
+    else:                                                # 通用版：OpenAI 格式
+        obj = resp.json()
+        text = reasoning = ""
+        choices = obj.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            text = msg.get("content", "") or ""
+            reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        r.output_tokens = (obj.get("usage") or {}).get("completion_tokens")
+        r.raw_response = json.dumps(obj, ensure_ascii=False)
     r.success = True
     r.e2e_s = t_end - t0
     r.output_chars = len(reasoning) + len(text)
-    r.output_tokens = usage.get("completion_tokens")
     r.reasoning_text = reasoning
     r.output_text = text
-    r.raw_response = json.dumps(obj, ensure_ascii=False)
     r.tokens_per_s = _rate(r.output_tokens, r.e2e_s)
     r.chars_per_s = _rate(r.output_chars, r.e2e_s)
 
@@ -301,7 +319,8 @@ def _decode_once(url, headers, body, t0, r: RequestResult, timeout):
 def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
                           base_url, model, api_key="", max_tokens=256,
                           temperature=0.0, stream=True, reasoning=True, timeout=60.0,
-                          body_builder=None, progress=True):
+                          body_builder=None, response_parser=None,
+                          api_path="/v1/chat/completions", progress=True):
     """並發跑一批 (prompt, answer)。回傳 (results, wall_seconds)。
 
     closed-loop：固定 concurrency 個 worker 同時在飛（ThreadPoolExecutor）。逐筆 stamp
@@ -315,7 +334,8 @@ def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
             ex.submit(chat_once, prompt, base_url=base_url, model=model, api_key=api_key,
                       max_tokens=max_tokens, temperature=temperature,
                       stream=stream, reasoning=reasoning, timeout=timeout,
-                      body_builder=body_builder): (i, answer)
+                      body_builder=body_builder, response_parser=response_parser,
+                      api_path=api_path): (i, answer)
             for i, (prompt, answer) in enumerate(pairs)
         }
         done = 0
@@ -353,7 +373,7 @@ def main():
         pairs, CONCURRENCY, scenario=SCENARIO, run_label=RUN_LABEL,
         base_url=BASE_URL, model=MODEL, api_key=API_KEY, max_tokens=MAX_TOKENS,
         temperature=TEMPERATURE, stream=STREAM, reasoning=REASONING, timeout=REQUEST_TIMEOUT,
-        body_builder=BODY_BUILDER,
+        body_builder=BODY_BUILDER, response_parser=RESPONSE_PARSER, api_path=API_PATH,
     )
 
     summ = summarize(results, wall_seconds=wall)
@@ -365,6 +385,7 @@ def main():
     # 本次執行參數（寫進報表第③頁；API_KEY 遮罩）
     params = [
         ("BASE_URL", BASE_URL),
+        ("API_PATH", API_PATH),
         ("MODEL", MODEL),
         ("API_KEY", "***" if API_KEY else ""),
         ("RUN_LABEL", RUN_LABEL),
@@ -376,6 +397,7 @@ def main():
         ("STREAM", STREAM),
         ("REASONING", REASONING),
         ("BODY_BUILDER", BODY_BUILDER.__name__ if BODY_BUILDER else "(通用版 _build_body)"),
+        ("RESPONSE_PARSER", RESPONSE_PARSER.__name__ if RESPONSE_PARSER else "(OpenAI 預設)"),
         ("INPUT_LEN", INPUT_LEN),
         ("DATASET", DATASET or "(合成輸入)"),
         ("OUTPUT_DIR", OUTPUT_DIR),
