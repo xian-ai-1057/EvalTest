@@ -1,2 +1,5 @@
-# 唯一第三方相依；其餘皆用 Python 標準庫。
+# 第三方相依：requests（HTTP）＋ pandas/openpyxl（僅用於輸出：明細 DataFrame → Excel）。
+# 其餘皆用 Python 標準庫（metrics 自算百分位、xlsx.py 手寫 .xlsx 給 accuracy、測試為純斷言腳本）。
 requests>=2.28
+pandas>=2.0
+openpyxl>=3.1

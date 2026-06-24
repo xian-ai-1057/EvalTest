@@ -36,7 +36,8 @@ OUT_PATH = ""                  # 留空＝輸入檔同名 _accuracy.xlsx
 def load_records(path: str) -> list:
     """讀資料為 list[dict]。
 
-    .json：json.load（取 simple_bench 產出的明細陣列，最外層需為 list）。
+    .json：json.load。simple_bench 產出的 {summary, params, detail} dict 取其 detail；
+      也相容最外層即明細陣列（舊格式 / 自備）。
     .csv ：csv.DictReader（utf-8-sig 相容 Excel BOM）。
     """
     p = Path(path)
@@ -46,8 +47,10 @@ def load_records(path: str) -> list:
     if suffix == ".json":
         with p.open(encoding="utf-8") as f:
             data = json.load(f)
+        if isinstance(data, dict):                 # 新版輸出 {summary, params, detail}：取明細
+            data = data.get("detail") or data.get("明細") or []
         if not isinstance(data, list):
-            raise ValueError(f"JSON 最外層需為陣列（list），實際為 {type(data).__name__}")
+            raise ValueError(f"JSON 最外層需為陣列（list），或含 detail 的物件，實際為 {type(data).__name__}")
         return [d for d in data if isinstance(d, dict)]
     if suffix == ".csv":
         with p.open(encoding="utf-8-sig", newline="") as f:
