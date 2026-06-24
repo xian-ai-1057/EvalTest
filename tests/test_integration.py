@@ -88,6 +88,7 @@ def main():
         cols = field_names()
         _check(all(c in cols for c in ("input_text", "reasoning_text", "output_text")),
                "明細欄位含 input_text / reasoning_text / output_text")
+        _check("answer" in cols, "明細欄位含 answer（正解；供準確率比對）")
         _check("raw_response" not in cols, "明細欄位不含 raw_response（只寫進 JSON）")
         _check("raw_response" in field_names(include_raw=True),
                "field_names(include_raw=True) 含 raw_response")
@@ -263,6 +264,48 @@ def main():
         qbar.update(0)
         qbar.close()
         _check(qbuf.getvalue() == "", "total<=0 時進度條完全靜默")
+
+        # --- 簡化版 simple_bench：requests 內聯呼叫 + 並發 + answer 端到端 ---
+        print("[簡化版] simple_bench.chat_once / run_concurrent_simple（answer 端到端）")
+        from simple_bench import chat_once, run_concurrent_simple
+        sb = chat_once("hello", base_url=base, model="mock", max_tokens=12, stream=True)
+        _check(sb.success and sb.ttft_ms is not None and sb.e2e_s is not None,
+               "simple_bench.chat_once 串流量到 TTFT/e2e")
+        _check(bool(sb.output_tokens) and sb.output_tokens > 0, "simple_bench 取到 output_tokens")
+        _check(sb.ttft_ms / 1000.0 < sb.e2e_s, "simple_bench TTFT < e2e")
+        pairs = [("問一", "甲"), ("問二", "乙"), ("問三", "丙")]
+        sres, swall = run_concurrent_simple(pairs, 2, scenario="it_simple", run_label="MOCK",
+                                            base_url=base, model="mock", max_tokens=12,
+                                            stream=True, progress=False)
+        _check(len(sres) == 3 and all(r.success for r in sres), "simple_bench 並發 3 筆全部成功")
+        _check([r.answer for r in sres] == ["甲", "乙", "丙"],
+               "simple_bench 把 answer 依序帶進每筆結果")
+        _check(all(r.concurrency == 2 and r.scenario == "it_simple" for r in sres),
+               "simple_bench 每筆 stamp concurrency / scenario")
+        ssumm = summarize(sres, wall_seconds=swall)
+        sx, sj = write_outputs(sres, ssumm, os.path.join(_tmp.mkdtemp(), "it_simple_MOCK.xlsx"))
+        with _zip.ZipFile(sx) as z:
+            s2 = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
+            _check("answer" in s2, "simple_bench 輸出明細頁含 answer 欄")
+        with open(sj, encoding="utf-8") as _f:
+            srecs = _json.load(_f)
+        _check(srecs[0].get("answer") == "甲", "simple_bench JSON 明細含 answer")
+
+        # --- 準確率 accuracy：完全相等比對（strip、跳過無正解）---
+        print("[準確率] accuracy.compare_exact 完全相等 + 跳過空正解")
+        from accuracy import compare_exact, list_fields
+        recs = [
+            {"index": 0, "answer": "A", "output_text": "A"},     # 對
+            {"index": 1, "answer": "B", "output_text": "C"},     # 錯
+            {"index": 2, "answer": "", "output_text": "D"},      # 無正解 → 跳過
+            {"index": 3, "answer": " A ", "output_text": "A"},   # strip 後相等 → 對
+        ]
+        asum, arows = compare_exact(recs, "answer", "output_text")
+        _check(asum["compared"] == 3 and asum["correct"] == 2,
+               "準確率：可比對 3、正確 2（跳過空正解、strip 後比對）")
+        _check(abs(asum["accuracy"] - 2.0 / 3.0) < 1e-9, "準確率＝2/3")
+        _check(len(arows) == 3 and list_fields(recs) == ["index", "answer", "output_text"],
+               "逐筆列數正確、list_fields 取得欄位名")
 
         print("\n全部整合檢查通過 ✅")
     finally:

@@ -37,6 +37,7 @@ class RequestResult:
     input_text: str = ""                 # 輸入原文
     reasoning_text: str = ""             # 思考內容（reasoning_content；不適用 / 無則空）
     output_text: str = ""                # 輸出內容（最終回覆文字）
+    answer: str = ""                     # 正解（ground truth；由帶答案的資料集帶入，無則空；供準確率比對）
     raw_response: str = field(default="", metadata={"csv": False})  # 最終結果（JSON 字串，串流彙整非逐 chunk）
 
 

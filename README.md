@@ -76,6 +76,7 @@ python tests/test_integration.py
 貫穿全鏈路（adapter → runner → metrics → reporter）的**唯一單筆資料形狀**。
 **欄位宣告順序 == Excel 第②頁明細的欄序**（`reporter.py` 用 `field_names()` 建表）。
 其中 `raw_response` 標記 `metadata={"csv": False}`，**只進 JSON、不進 Excel 明細**（內容過長）。
+`output_text` 之後的 `answer` 欄為**正解（ground truth）**：一般情境留空，`simple_bench.py` 讀帶答案的資料集時填入，供 `accuracy.py` 比對。
 
 ### 2. adapter 的 `call()` 契約（`core/client.py`）
 
@@ -109,6 +110,24 @@ runner 只認得這個契約，完全不知道底層 HTTP 細節。**`make_adapt
 
 > 所有腳本都「直接以路徑執行」（`python scenarios/foo.py ...`），不要改成 package-relative import。
 > 腳本刻意設計得很薄、流程一致：`Config.load()` → `make_adapter()` →（選用 `GpuSampler.start()`）→ `run_single`/`run_concurrent` →（`GpuSampler.stop()`）→ `summarize()` → `print_summary()` + `write_outputs()`。
+
+---
+
+## 最簡化版單檔（`simple_bench.py` / `accuracy.py`）
+
+除了上面薄但分層的情境腳本，根目錄另提供**兩支最簡化的單檔工具**：把「呼叫 + 計時 + 並發」用最直白的 `requests` 寫成幾個 function（不經 `make_adapter` / `runner` 抽象），輸出仍重用 `core`，格式與情境腳本完全一致（雙頁 Excel ＋ 同名 JSON ＋ 主控台摘要）。
+
+**參數一律改檔案頂部的「參數設定區」（純 Python 變數），不吃指令列 args、不讀 `.env`**，直接執行即可：
+
+```bash
+python simple_bench.py     # 對 OpenAI 相容 /v1/chat/completions 跑分（記時、並發、輸出報表）
+python accuracy.py         # 欄位比對算準確率（完全相等），輸出準確率摘要＋逐筆比對 Excel
+```
+
+- **`simple_bench.py`**：設定區可調 `BASE_URL / MODEL / API_KEY / RUN_LABEL / N_REQUESTS / CONCURRENCY / MAX_TOKENS / TEMPERATURE / STREAM / INPUT_LEN / DATASET / OUTPUT_DIR / REQUEST_TIMEOUT`。`STREAM=True` 量 TTFT/TPOT，否則只量 e2e。`DATASET` 留空用合成輸入；填 CSV（欄名認 `question`/`prompt`… 與 `answer`/`正解`…）時，每筆**正解一併寫進輸出明細與 JSON 的 `answer` 欄**，供準確率比對。
+- **`accuracy.py`**：設定區指定 `INPUT_PATH`（`simple_bench` 產出的 JSON，或自備 CSV）、`ANSWER_FIELD`、`REPLY_FIELD`、`OUT_PATH`。逐筆 `strip()` 後**完全相等**比對（正解為空者跳過），印出準確率並輸出雙頁 Excel（準確率摘要 / 逐筆比對）。指定的欄名不存在時，會列出檔案裡可用欄位、請你回設定區改。
+
+> 典型流程：編輯 `simple_bench.py` 設定區（含帶 `answer` 的 `DATASET`）→ `python simple_bench.py` → 把 `accuracy.py` 的 `INPUT_PATH` 指到產出的 `.json` → `python accuracy.py`。
 
 ---
 
