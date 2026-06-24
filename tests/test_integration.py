@@ -1,22 +1,26 @@
-"""整合測試（G2 把關）：對假伺服器跑完整鏈路 adapter → runner → metrics → reporter。
+"""煙霧測試（不需 GPU）：對假 OpenAI 伺服器跑 simple_bench 與 accuracy 的核心路徑。
 
-驗證 AC1/AC2：
-  - 產生對應筆數、全數成功；
-  - 數值合理：TTFT < e2e、tokens_per_s ≈ output_tokens ÷ (e2e − ttft)；
-  - 並發回傳 wall_seconds、總吞吐可算。
+驗證：
+  - simple_bench.chat_once 串流量到 TTFT/e2e、output_tokens，且 TTFT < e2e；
+  - run_concurrent_simple 並發成功、依序帶入 answer、逐筆 stamp concurrency / scenario；
+  - 輸出沿用 core：雙頁 Excel（明細頁含 answer 欄）＋同名 JSON；給 params 時多一頁「執行參數」；
+  - _build_body 的思考模式開關（chat_template_kwargs.enable_thinking）與串流才帶 stream_options；
+  - accuracy.compare_exact 完全相等比對（strip 後比較、跳過空正解）。
+
 直接執行：python tests/test_integration.py
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.client import OpenAIChatAdapter, GenericJSONAdapter, VLMAdapter, CallableAdapter
 from core.metrics import summarize
-from core.reporter import print_summary
-from core.runner import run_concurrent, run_single
+from core.reporter import print_summary, write_outputs
 from tests.mock_server import start_in_thread
 
 
@@ -30,242 +34,8 @@ def main():
     httpd, port = start_in_thread(0)
     base = f"http://127.0.0.1:{port}"
     print(f"mock server @ {base}")
-    img_path = None      # VLM 測試用暫存圖；於 finally 清除
     try:
-        adapter = OpenAIChatAdapter(base_url=base, model="mock", timeout=30)
-
-        # --- 單發（AC1/AC2）---
-        print("[單發] run_single n=10")
-        results = run_single(adapter, ["hello"] * 10, scenario="it_single",
-                             run_label="MOCK", max_tokens=12, stream=True)
-        _check(len(results) == 10, "產生 10 筆")
-        _check(all(r.success for r in results), "全部成功")
-        r0 = results[0]
-        _check(r0.ttft_ms is not None and r0.e2e_s is not None, "有 TTFT 與 e2e")
-        _check(r0.ttft_ms / 1000.0 < r0.e2e_s, "TTFT < e2e")
-        _check(r0.output_tokens and r0.output_tokens > 0, "有輸出 token 數（來自 usage）")
-        # tokens_per_s ≈ output_tokens / (e2e - ttft)
-        decode_s = r0.e2e_s - r0.ttft_ms / 1000.0
-        expect = r0.output_tokens / decode_s
-        _check(abs(r0.tokens_per_s - expect) < 1e-6, "tokens_per_s ≈ tokens ÷ (e2e − ttft)")
-        print_summary(summarize(results))
-
-        # --- 原文擷取：輸入 / 思考內容 / 輸出內容 / 完整原始回應 ---
-        print("[原文] 擷取輸入、思考內容、輸出內容與完整 JSON")
-        import json as _json
-        _check(bool(r0.input_text), "擷取到輸入原文 input_text")
-        _check(bool(r0.output_text) and r0.output_chars == len(r0.reasoning_text) + len(r0.output_text),
-               "擷取到輸出內容 output_text（output_chars = 思考+內容字數）")
-        _check(bool(r0.reasoning_text), "擷取到思考內容 reasoning_text（reasoning_content）")
-        final = _json.loads(r0.raw_response)
-        _check(isinstance(final, dict) and bool(final.get("choices")),
-               "raw_response 為彙整後的最終結果物件（非逐 chunk）")
-        _check(final["choices"][0]["message"].get("content") == r0.output_text,
-               "raw_response.choices[0].message.content == output_text")
-        _check(bool(final.get("usage")), "raw_response 保留 usage")
-        # 推理模型：reasoning 與 content 都計入吞吐（TTFT 取首個 token，AC2 仍成立）
-        decode_r = r0.e2e_s - r0.ttft_ms / 1000.0
-        _check(abs(r0.tokens_per_s - r0.output_tokens / decode_r) < 1e-6,
-               "推理模型 tokens_per_s = (含 reasoning 的)tokens ÷ (e2e − ttft)")
-
-        # --- 無 reasoning 的一般模型：原文照常、output_chars==len(output_text)、計時正常 ---
-        print("[原文] 無思考內容的一般模型（model 含 plain）")
-        plain = OpenAIChatAdapter(base_url=base, model="mock-plain", timeout=30)
-        pres = run_single(plain, ["hi"] * 3, scenario="it_plain", run_label="MOCK",
-                          max_tokens=12, stream=True)
-        p0 = pres[0]
-        _check(all(r.success for r in pres), "無 reasoning：全部成功")
-        _check(p0.reasoning_text == "", "無 reasoning：reasoning_text 為空")
-        _check(bool(p0.output_text) and p0.output_chars == len(p0.output_text),
-               "無 reasoning：output_chars == len(output_text)")
-        _check(p0.ttft_ms is not None and p0.ttft_ms / 1000.0 < p0.e2e_s,
-               "無 reasoning：TTFT 正常（< e2e）")
-        _check(abs(p0.tokens_per_s - p0.output_tokens / (p0.e2e_s - p0.ttft_ms / 1000.0)) < 1e-6,
-               "無 reasoning：tokens_per_s 仍符合 AC2")
-
-        # --- 欄位契約：CSV 含原文三欄、但排除超長的 raw_response（只進 JSON）---
-        from core.metrics import field_names
-        cols = field_names()
-        _check(all(c in cols for c in ("input_text", "reasoning_text", "output_text")),
-               "明細欄位含 input_text / reasoning_text / output_text")
-        _check("answer" in cols, "明細欄位含 answer（正解；供準確率比對）")
-        _check("raw_response" not in cols, "明細欄位不含 raw_response（只寫進 JSON）")
-        _check("raw_response" in field_names(include_raw=True),
-               "field_names(include_raw=True) 含 raw_response")
-
-        # --- 輸出契約：write_outputs 產生 Excel（雙工作表）+ JSON 明細 ---
-        import tempfile as _tmp
-        import zipfile as _zip
-        from xml.dom import minidom as _mdom
-        from core.reporter import write_outputs
-        single_summ = summarize(results)
-        xlsx_p, json_p = write_outputs(results, single_summ,
-                                       os.path.join(_tmp.mkdtemp(), "it_single_MOCK.xlsx"))
-        _check(xlsx_p.endswith(".xlsx") and os.path.exists(xlsx_p) and os.path.exists(json_p),
-               "write_outputs 產生 Excel 與 JSON")
-        with _zip.ZipFile(xlsx_p) as z:
-            names = z.namelist()
-            _check("xl/worksheets/sheet1.xml" in names and "xl/worksheets/sheet2.xml" in names,
-                   "Excel 含兩個工作表")
-            wb = z.read("xl/workbook.xml").decode("utf-8")
-            _check("統計摘要" in wb and "明細" in wb, "工作表名稱為 統計摘要 / 明細")
-            s1xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
-            _check("TTFT 首字(ms)" in s1xml and "端到端 e2e(s)" in s1xml,
-                   "統計摘要頁含各延遲指標列")
-            s2xml = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
-            _check("input_text" in s2xml and "output_text" in s2xml, "明細頁表頭含原本 CSV 欄位")
-            _check("raw_response" not in s2xml, "明細頁不含 raw_response（只進 JSON）")
-            # 各 XML 部位需為合法 XML（能被 Excel/LibreOffice 開）
-            for part in ("[Content_Types].xml", "xl/workbook.xml",
-                         "xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"):
-                _mdom.parseString(z.read(part))
-        _check(True, "Excel 各 XML 部位皆為合法 XML")
-        with open(json_p, encoding="utf-8") as _f:
-            recs = _json.load(_f)
-        _check(len(recs) == len(results) and bool(recs[0].get("output_text")),
-               "JSON 明細每筆含 output_text")
-        _check(isinstance(recs[0].get("raw_response"), dict) and bool(recs[0]["raw_response"].get("choices")),
-               "JSON 明細的 raw_response 已還原為最終結果物件")
-
-        # --- 並發（AC3 雛形）---
-        print("[並發] run_concurrent concurrency=8 n=24")
-        cres, wall = run_concurrent(adapter, ["hi"] * 24, concurrency=8,
-                                    scenario="it_concurrent", run_label="MOCK",
-                                    max_tokens=12, stream=True)
-        _check(len(cres) == 24 and all(r.success for r in cres), "並發 24 筆全部成功")
-        _check(wall > 0, "回傳 wall_seconds")
-        _check(all(r.concurrency == 8 for r in cres), "每筆標記 concurrency=8")
-        summ = summarize(cres, wall_seconds=wall)
-        _check(summ.throughput_tokens_per_s and summ.throughput_tokens_per_s > 0, "可算系統總吞吐")
-        print_summary(summ)
-
-        # --- 失敗路徑：adapter 拋例外時，單筆記為 failed、不得中斷整批，且能彙總/輸出 ---
-        print("[失敗路徑] adapter 例外 → 記為 failed、runner 不崩潰、其餘照常、可彙總可輸出")
-
-        class _RaisingAdapter:
-            def call(self, payload, *, max_tokens=256, temperature=0.0, stream=True):
-                raise RuntimeError("boom")
-
-        fres, fwall = run_concurrent(_RaisingAdapter(), ["x"] * 5, concurrency=3,
-                                     scenario="it_fail", run_label="MOCK")
-        _check(len(fres) == 5 and all(not r.success for r in fres),
-               "5 筆全部記為 failed（runner 未崩潰、無 None 洞）")
-        _check(all(r.error for r in fres), "每筆 failed 都帶 error 訊息")
-        fsumm = summarize(fres, wall_seconds=fwall)
-        _check(fsumm.failed == 5 and fsumm.success == 0, "彙總：failed=5、success=0")
-        # 成功＋失敗混在一起仍能輸出 Excel+JSON（驗證 reporter 對 failed 結果穩健）
-        mixed = list(cres) + list(fres)
-        mxlsx, mjson = write_outputs(mixed, summarize(mixed),
-                                     os.path.join(_tmp.mkdtemp(), "it_mixed_MOCK.xlsx"))
-        _check(os.path.exists(mxlsx) and os.path.exists(mjson),
-               "成功＋失敗混合結果仍能輸出 Excel+JSON")
-
-        # --- GenericJSONAdapter（FR8/AC6）---
-        print("[通用] GenericJSONAdapter -> /predict")
-        gen = GenericJSONAdapter(url=f"{base}/predict",
-                                 request_template='{"text": "{input}"}',
-                                 response_path="output", timeout=30)
-        gres = run_single(gen, ["客戶要查詢帳單"] * 3, scenario="it_generic",
-                          run_label="MOCK", stream=False)
-        _check(all(r.success for r in gres), "generic 全部成功")
-        _check(gres[0].output_chars and gres[0].output_chars > 0, "generic 取到輸出文字")
-
-        # --- VLMAdapter 圖片→文本（FR10/AC7）---
-        print("[VLM] VLMAdapter（圖片→base64→/predict）")
-        import base64
-        import tempfile
-        png = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        )
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
-            tf.write(png)
-            img_path = tf.name
-        vlm = VLMAdapter(url=f"{base}/predict",
-                         request_template='{"image": "{image_b64}", "prompt": "{prompt}"}',
-                         response_path="output", prompt="描述這張圖片", timeout=30)
-        vres = run_single(vlm, [img_path] * 3, scenario="it_vlm", run_label="MOCK", stream=False)
-        _check(all(r.success for r in vres), "VLM 全部成功")
-        _check(vres[0].e2e_s is not None and (vres[0].output_chars or 0) > 0,
-               "VLM 量到 e2e 與輸出文字")
-
-        # --- CallableAdapter 套件版（FR11/AC8）---
-        print("[套件] CallableAdapter：回完整字串 / generator")
-        c1 = run_single(CallableAdapter(lambda p: "這是一段辨識結果文字"),
-                        ["x"] * 3, scenario="it_callable", run_label="MOCK")
-        _check(all(r.success for r in c1) and c1[0].e2e_s is not None, "callable 回字串量到 e2e")
-
-        def _gen(_p):
-            import time as _t
-            for ch in "逐字產出測試":
-                _t.sleep(0.005)
-                yield ch
-        c2 = run_single(CallableAdapter(_gen), ["x"] * 3,
-                        scenario="it_callable_stream", run_label="MOCK")
-        _check(c2[0].ttft_ms is not None and c2[0].tpot_ms is not None,
-               "callable generator 量到 TTFT/TPOT")
-
-        # --- 資料集輸入：CSV / TXT 讀檔 + 依 n 對齊 ---
-        print("[資料集] load_prompts_file / load_dataset_inputs（CSV、TXT、n 對齊）")
-        import tempfile as _tf
-        from scenarios._common import load_dataset_inputs, load_prompts_file
-        d = _tf.mkdtemp()
-        # 帶 BOM 表頭的 CSV：應取 prompt 欄、跳過表頭、忽略其他欄
-        csv_hdr = os.path.join(d, "with_header.csv")
-        with open(csv_hdr, "w", encoding="utf-8-sig", newline="") as f:
-            f.write("id,prompt,note\n1,請問記憶體頻寬是什麼,a\n2,FP8 與 FP4 差異,b\n")
-        p1 = load_prompts_file(csv_hdr)
-        _check(p1 == ["請問記憶體頻寬是什麼", "FP8 與 FP4 差異"], "CSV 依 prompt 欄取值、跳過表頭")
-        # 無可辨識表頭的 CSV：取第一欄、整份都算資料
-        csv_nohdr = os.path.join(d, "no_header.csv")
-        with open(csv_nohdr, "w", encoding="utf-8", newline="") as f:
-            f.write("第一句,x\n第二句,y\n")
-        _check(load_prompts_file(csv_nohdr) == ["第一句", "第二句"], "無表頭 CSV 取第一欄")
-        # TXT：一行一個、略過空白行
-        txt = os.path.join(d, "prompts.txt")
-        with open(txt, "w", encoding="utf-8") as f:
-            f.write("第一個提示\n\n  第二個提示  \n")
-        _check(load_prompts_file(txt) == ["第一個提示", "第二個提示"], "TXT 一行一個、略過空白行")
-        # 依 n 對齊：不足循環補滿、過多截斷
-        _check(len(load_dataset_inputs(csv_hdr, 5)) == 5, "n=5 由 2 筆循環補滿")
-        _check(load_dataset_inputs(csv_hdr, 5)[2] == p1[0], "循環補滿順序正確（第3筆回到第1筆）")
-        _check(len(load_dataset_inputs(txt, 1)) == 1, "n=1 截斷至 1 筆")
-
-        # --- 多筆統計摘要（情境② 多併發級別）+ GPU 寫進統計摘要頁 ---
-        print("[Excel 摘要] 多 Summary（list）+ GpuStats 寫進第①頁各成區塊")
-        from core.gpu import GpuStats
-        gpu = GpuStats(util_mean=55.0, util_max=80.0, mem_mean_mb=1024.0, mem_max_mb=2048.0, samples=7)
-        mxl, _mjs = write_outputs(cres, [single_summ, summ],
-                                  os.path.join(_tmp.mkdtemp(), "it_levels_MOCK.xlsx"),
-                                  gpu_stats_list=[None, gpu])
-        with _zip.ZipFile(mxl) as z:
-            s1 = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
-            _mdom.parseString(z.read("xl/worksheets/sheet1.xml"))   # 多區塊仍為合法 XML
-        _check("it_single" in s1 and "it_concurrent" in s1, "統計摘要頁含多個 Summary 各自區塊")
-        _check("系統總吞吐" in s1 and "GPU" in s1, "有 wall/gpu 時含系統總吞吐與 GPU 列")
-        _check(">55<" in s1 or ">55.0<" in s1, "GpuStats 數值寫入第①頁")
-
-        # --- 進度條：render 到 StringIO、強制啟用，驗證內容與收尾換行 ---
-        print("[進度條] ProgressBar 渲染（StringIO、enabled=True）")
-        import io as _io
-        from core.progress import ProgressBar
-        buf = _io.StringIO()
-        bar = ProgressBar(4, label="it_bar 併發1", stream=buf, enabled=True, min_interval=0.0)
-        for k in range(1, 5):
-            bar.update(k, failed=(1 if k == 4 else 0))
-        bar.close()
-        out = buf.getvalue()
-        _check("█" in out and "░" in out, "進度條含已完成/未完成塊字元")
-        _check("100%" in out and "4/4" in out, "完成時顯示 100% 與 4/4")
-        _check("失敗1" in out, "有失敗時顯示失敗筆數")
-        _check(out.endswith("\n"), "close() 以換行收尾")
-        # non-TTY / total<=0 應完全靜默（no-op）
-        qbuf = _io.StringIO()
-        qbar = ProgressBar(0, stream=qbuf, enabled=True)
-        qbar.update(0)
-        qbar.close()
-        _check(qbuf.getvalue() == "", "total<=0 時進度條完全靜默")
-
-        # --- 簡化版 simple_bench：requests 內聯呼叫 + 並發 + answer 端到端 ---
+        # --- simple_bench：requests 內聯呼叫 + 並發 + answer 端到端 ---
         print("[簡化版] simple_bench.chat_once / run_concurrent_simple（answer 端到端）")
         from simple_bench import chat_once, run_concurrent_simple
         sb = chat_once("hello", base_url=base, model="mock", max_tokens=12, stream=True)
@@ -273,6 +43,7 @@ def main():
                "simple_bench.chat_once 串流量到 TTFT/e2e")
         _check(bool(sb.output_tokens) and sb.output_tokens > 0, "simple_bench 取到 output_tokens")
         _check(sb.ttft_ms / 1000.0 < sb.e2e_s, "simple_bench TTFT < e2e")
+
         pairs = [("問一", "甲"), ("問二", "乙"), ("問三", "丙")]
         sres, swall = run_concurrent_simple(pairs, 2, scenario="it_simple", run_label="MOCK",
                                             base_url=base, model="mock", max_tokens=12,
@@ -283,15 +54,21 @@ def main():
         _check(all(r.concurrency == 2 and r.scenario == "it_simple" for r in sres),
                "simple_bench 每筆 stamp concurrency / scenario")
         ssumm = summarize(sres, wall_seconds=swall)
-        sx, sj = write_outputs(sres, ssumm, os.path.join(_tmp.mkdtemp(), "it_simple_MOCK.xlsx"))
-        with _zip.ZipFile(sx) as z:
+        print_summary(ssumm)
+
+        # --- 輸出契約：write_outputs 產生 Excel（明細頁含 answer）+ JSON 明細 ---
+        sx, sj = write_outputs(sres, ssumm, os.path.join(tempfile.mkdtemp(), "it_simple_MOCK.xlsx"))
+        _check(sx.endswith(".xlsx") and os.path.exists(sx) and os.path.exists(sj),
+               "write_outputs 產生 Excel 與 JSON")
+        with zipfile.ZipFile(sx) as z:
             s2 = z.read("xl/worksheets/sheet2.xml").decode("utf-8")
             _check("answer" in s2, "simple_bench 輸出明細頁含 answer 欄")
+            _check("raw_response" not in s2, "明細頁不含 raw_response（只進 JSON）")
         with open(sj, encoding="utf-8") as _f:
-            srecs = _json.load(_f)
+            srecs = json.load(_f)
         _check(srecs[0].get("answer") == "甲", "simple_bench JSON 明細含 answer")
 
-        # _build_body 帶 chat_template_kwargs.enable_thinking（思考模式開關）
+        # --- _build_body：思考模式開關 + 串流才帶 stream_options ---
         from simple_bench import _build_body
         b_on = _build_body("x", model="m", max_tokens=8, temperature=0.0, stream=True, reasoning=True)
         b_off = _build_body("x", model="m", max_tokens=8, temperature=0.0, stream=False, reasoning=False)
@@ -306,16 +83,16 @@ def main():
                                           stream=True, reasoning=False, progress=False)
         _check(len(rres) == 1 and rres[0].success, "simple_bench reasoning=False 端到端仍成功")
 
-        # 執行參數寫進 Excel 第③頁「執行參數」（params 為選用、向後相容）
-        px, _pj = write_outputs(sres, ssumm, os.path.join(_tmp.mkdtemp(), "it_params_MOCK.xlsx"),
+        # --- 執行參數寫進 Excel 第③頁「執行參數」（params 為選用、向後相容）---
+        px, _pj = write_outputs(sres, ssumm, os.path.join(tempfile.mkdtemp(), "it_params_MOCK.xlsx"),
                                 params=[("MODEL", "mock"), ("CONCURRENCY", 2),
                                         ("STREAM", True), ("REASONING", False)])
-        with _zip.ZipFile(px) as z:
+        with zipfile.ZipFile(px) as z:
             _check("xl/worksheets/sheet3.xml" in z.namelist(), "有 params 時產生第三個工作表")
             _check("執行參數" in z.read("xl/workbook.xml").decode("utf-8"), "第三頁名稱為 執行參數")
             s3 = z.read("xl/worksheets/sheet3.xml").decode("utf-8")
             _check("MODEL" in s3 and "CONCURRENCY" in s3, "執行參數頁含參數名 MODEL / CONCURRENCY")
-        with _zip.ZipFile(sx) as z:
+        with zipfile.ZipFile(sx) as z:
             _check("xl/worksheets/sheet3.xml" not in z.namelist(),
                    "不傳 params 時不產生第三頁（向後相容）")
 
@@ -335,14 +112,9 @@ def main():
         _check(len(arows) == 3 and list_fields(recs) == ["index", "answer", "output_text"],
                "逐筆列數正確、list_fields 取得欄位名")
 
-        print("\n全部整合檢查通過 ✅")
+        print("\n全部煙霧測試通過 ✅")
     finally:
         httpd.shutdown()
-        if img_path:
-            try:
-                os.unlink(img_path)
-            except OSError:
-                pass
 
 
 if __name__ == "__main__":
