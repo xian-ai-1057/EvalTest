@@ -83,6 +83,24 @@ def main():
                                           stream=True, reasoning=False, progress=False)
         _check(len(rres) == 1 and rres[0].success, "simple_bench reasoning=False 端到端仍成功")
 
+        # --- 自訂 body_builder：取代通用版、仍能解析回應；並經 run_concurrent_simple 串接 ---
+        seen = []
+        def _cust(prompt, *, model, max_tokens, temperature, stream, reasoning):
+            seen.append(prompt)
+            b = _build_body(prompt, model=model, max_tokens=max_tokens, temperature=temperature,
+                            stream=stream, reasoning=reasoning)
+            b.pop("chat_template_kwargs", None)   # 模擬嚴格服務：移除 vLLM 專屬欄位
+            b["top_p"] = 0.9                       # 模擬新增欄位
+            return b
+        cb = chat_once("hi", base_url=base, model="mock", max_tokens=8, stream=True, body_builder=_cust)
+        _check(cb.success and seen == ["hi"], "chat_once 用自訂 body_builder（被呼叫且成功）")
+        cres, _cw = run_concurrent_simple([("q", "a")], 1, base_url=base, model="mock",
+                                          max_tokens=8, stream=True, body_builder=_cust, progress=False)
+        _check(len(cres) == 1 and cres[0].success, "run_concurrent_simple 傳遞 body_builder 仍成功")
+        _check(_build_body("z", model="m", max_tokens=8, temperature=0.0, stream=True, reasoning=True)
+               .get("chat_template_kwargs") == {"enable_thinking": True},
+               "通用版 _build_body 不受影響（預設行為不變）")
+
         # --- 執行參數寫進 Excel 第③頁「執行參數」（params 為選用、向後相容）---
         px, _pj = write_outputs(sres, ssumm, os.path.join(tempfile.mkdtemp(), "it_params_MOCK.xlsx"),
                                 params=[("MODEL", "mock"), ("CONCURRENCY", 2),

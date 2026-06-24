@@ -49,6 +49,12 @@ INPUT_LEN = 512                       # 合成輸入字元長度（DATASET 留�
 DATASET = ""                          # 留空＝合成輸入；或填 CSV/TXT 路徑（CSV 可含 question+answer）
 OUTPUT_DIR = "results"                # 報表輸出資料夾
 REQUEST_TIMEOUT = 60.0                # 單請求逾時（秒）
+# 自訂請求 body：None＝用內建通用版 _build_body（OpenAI 相容，現有設計）。
+# 打 body 結構不同的服務時，指定自己的函式，簽章需與 _build_body 相同：
+#   def my_body(prompt, *, model, max_tokens, temperature, stream, reasoning) -> dict
+# 回傳整包 dict（含 messages / model…）。注意：是否串流由設定區 STREAM 決定，
+# 你的 body["stream"] 請跟著傳入的 stream 參數設，否則回應解析（串流/非串流）會對不上。
+BODY_BUILDER = None
 # ===============================================================
 
 SCENARIO = "simple_bench"
@@ -142,21 +148,34 @@ def _build_body(prompt, *, model, max_tokens, temperature, stream, reasoning):
     return body
 
 
+# 自訂 body 範例：打嚴格服務（如真正 OpenAI API）—— 拿掉 vLLM 專屬欄位、加取樣參數。
+# 要用就解除註解、把設定區的 BODY_BUILDER 設成 _example_body_builder。
+# def _example_body_builder(prompt, *, model, max_tokens, temperature, stream, reasoning):
+#     body = _build_body(prompt, model=model, max_tokens=max_tokens,
+#                        temperature=temperature, stream=stream, reasoning=reasoning)
+#     body.pop("chat_template_kwargs", None)   # 嚴格端點會拒絕未知欄位
+#     body["top_p"] = 0.9                       # 視服務需要新增/覆寫
+#     return body
+
+
 def chat_once(prompt, *, base_url, model, api_key="", max_tokens=256,
-              temperature=0.0, stream=True, reasoning=True, timeout=60.0) -> RequestResult:
+              temperature=0.0, stream=True, reasoning=True, timeout=60.0,
+              body_builder=None) -> RequestResult:
     """打一次 OpenAI 相容 /v1/chat/completions，回傳量測結果 RequestResult。
 
     串流（stream=True）量 TTFT/TPOT；非串流只量端到端 e2e。reasoning 控制思考模式
-    （chat_template_kwargs.enable_thinking）。思考內容 reasoning_content（相容 reasoning）
-    與正式 content 都計入字數 / token 數 / 計時，與 usage.completion_tokens 一致。任何連線 /
-    HTTP / JSON 解析錯誤都記為 success=False、填 error，不拋出（不讓單筆拖垮整批）。
+    （chat_template_kwargs.enable_thinking）。body_builder 指定時改用它整包組 body
+    （取代通用版 _build_body，供 body 結構不同的服務）。思考內容 reasoning_content
+    （相容 reasoning）與正式 content 都計入字數 / token 數 / 計時，與 usage.completion_tokens
+    一致。任何連線 / HTTP / JSON 解析錯誤都記為 success=False、填 error，不拋出（不讓單筆拖垮整批）。
     """
     url = base_url.rstrip("/") + "/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    body = _build_body(prompt, model=model, max_tokens=max_tokens,
-                       temperature=temperature, stream=stream, reasoning=reasoning)
+    builder = body_builder or _build_body                 # None＝用內建通用版
+    body = builder(prompt, model=model, max_tokens=max_tokens,
+                   temperature=temperature, stream=stream, reasoning=reasoning)
 
     r = RequestResult(ts=time.time())
     r.input_text = str(prompt)
@@ -281,7 +300,8 @@ def _decode_once(url, headers, body, t0, r: RequestResult, timeout):
 
 def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
                           base_url, model, api_key="", max_tokens=256,
-                          temperature=0.0, stream=True, reasoning=True, timeout=60.0, progress=True):
+                          temperature=0.0, stream=True, reasoning=True, timeout=60.0,
+                          body_builder=None, progress=True):
     """並發跑一批 (prompt, answer)。回傳 (results, wall_seconds)。
 
     closed-loop：固定 concurrency 個 worker 同時在飛（ThreadPoolExecutor）。逐筆 stamp
@@ -294,7 +314,8 @@ def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
         fut_map = {
             ex.submit(chat_once, prompt, base_url=base_url, model=model, api_key=api_key,
                       max_tokens=max_tokens, temperature=temperature,
-                      stream=stream, reasoning=reasoning, timeout=timeout): (i, answer)
+                      stream=stream, reasoning=reasoning, timeout=timeout,
+                      body_builder=body_builder): (i, answer)
             for i, (prompt, answer) in enumerate(pairs)
         }
         done = 0
@@ -332,6 +353,7 @@ def main():
         pairs, CONCURRENCY, scenario=SCENARIO, run_label=RUN_LABEL,
         base_url=BASE_URL, model=MODEL, api_key=API_KEY, max_tokens=MAX_TOKENS,
         temperature=TEMPERATURE, stream=STREAM, reasoning=REASONING, timeout=REQUEST_TIMEOUT,
+        body_builder=BODY_BUILDER,
     )
 
     summ = summarize(results, wall_seconds=wall)
@@ -353,6 +375,7 @@ def main():
         ("TEMPERATURE", TEMPERATURE),
         ("STREAM", STREAM),
         ("REASONING", REASONING),
+        ("BODY_BUILDER", BODY_BUILDER.__name__ if BODY_BUILDER else "(通用版 _build_body)"),
         ("INPUT_LEN", INPUT_LEN),
         ("DATASET", DATASET or "(合成輸入)"),
         ("OUTPUT_DIR", OUTPUT_DIR),
