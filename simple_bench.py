@@ -44,6 +44,7 @@ CONCURRENCY = 4                       # 並發數（1＝單發）
 MAX_TOKENS = 256                      # 輸出長度上限
 TEMPERATURE = 0.0                     # 取樣溫度
 STREAM = True                         # True 量 TTFT/TPOT；False 只量端到端 e2e
+REASONING = True                      # 思考模式開關 → 請求 body 的 chat_template_kwargs.enable_thinking；False 關閉思考
 INPUT_LEN = 512                       # 合成輸入字元長度（DATASET 留空時用）
 DATASET = ""                          # 留空＝合成輸入；或填 CSV/TXT 路徑（CSV 可含 question+answer）
 OUTPUT_DIR = "results"                # 報表輸出資料夾
@@ -122,28 +123,40 @@ def _rate(n, seconds):
     return n / seconds
 
 
-def chat_once(prompt, *, base_url, model, api_key="", max_tokens=256,
-              temperature=0.0, stream=True, timeout=60.0) -> RequestResult:
-    """打一次 OpenAI 相容 /v1/chat/completions，回傳量測結果 RequestResult。
+def _build_body(prompt, *, model, max_tokens, temperature, stream, reasoning):
+    """組 OpenAI 相容 /v1/chat/completions 請求 body。
 
-    串流（stream=True）量 TTFT/TPOT；非串流只量端到端 e2e。思考內容
-    reasoning_content（相容 reasoning）與正式 content 都計入字數 / token 數 / 計時，
-    與 usage.completion_tokens 一致。任何連線 / HTTP / JSON 解析錯誤都記為 success=False、
-    填 error，不拋出（不讓單筆拖垮整批）。
+    chat_template_kwargs.enable_thinking 控制推理模型是否輸出思考內容（vLLM / SGLang 慣例）；
+    串流時另加 stream_options.include_usage 以取精確 token 數。
     """
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
     body = {
         "model": model,
         "messages": [{"role": "user", "content": str(prompt)}],
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": stream,
+        "chat_template_kwargs": {"enable_thinking": reasoning},   # 思考模式開關
     }
     if stream:
-        body["stream_options"] = {"include_usage": True}   # 要求末包附 usage，取精確 token 數
+        body["stream_options"] = {"include_usage": True}          # 要求末包附 usage，取精確 token 數
+    return body
+
+
+def chat_once(prompt, *, base_url, model, api_key="", max_tokens=256,
+              temperature=0.0, stream=True, reasoning=True, timeout=60.0) -> RequestResult:
+    """打一次 OpenAI 相容 /v1/chat/completions，回傳量測結果 RequestResult。
+
+    串流（stream=True）量 TTFT/TPOT；非串流只量端到端 e2e。reasoning 控制思考模式
+    （chat_template_kwargs.enable_thinking）。思考內容 reasoning_content（相容 reasoning）
+    與正式 content 都計入字數 / token 數 / 計時，與 usage.completion_tokens 一致。任何連線 /
+    HTTP / JSON 解析錯誤都記為 success=False、填 error，不拋出（不讓單筆拖垮整批）。
+    """
+    url = base_url.rstrip("/") + "/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    body = _build_body(prompt, model=model, max_tokens=max_tokens,
+                       temperature=temperature, stream=stream, reasoning=reasoning)
 
     r = RequestResult(ts=time.time())
     r.input_text = str(prompt)
@@ -268,7 +281,7 @@ def _decode_once(url, headers, body, t0, r: RequestResult, timeout):
 
 def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
                           base_url, model, api_key="", max_tokens=256,
-                          temperature=0.0, stream=True, timeout=60.0, progress=True):
+                          temperature=0.0, stream=True, reasoning=True, timeout=60.0, progress=True):
     """並發跑一批 (prompt, answer)。回傳 (results, wall_seconds)。
 
     closed-loop：固定 concurrency 個 worker 同時在飛（ThreadPoolExecutor）。逐筆 stamp
@@ -281,7 +294,7 @@ def run_concurrent_simple(pairs, concurrency, *, scenario="", run_label="",
         fut_map = {
             ex.submit(chat_once, prompt, base_url=base_url, model=model, api_key=api_key,
                       max_tokens=max_tokens, temperature=temperature,
-                      stream=stream, timeout=timeout): (i, answer)
+                      stream=stream, reasoning=reasoning, timeout=timeout): (i, answer)
             for i, (prompt, answer) in enumerate(pairs)
         }
         done = 0
@@ -312,12 +325,13 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     pairs = build_pairs()
     print(f"對 {BASE_URL} 發 {len(pairs)} 筆請求"
-          f"（並發 {CONCURRENCY}，{'串流' if STREAM else '非串流'}，模型 {MODEL}）…")
+          f"（並發 {CONCURRENCY}，{'串流' if STREAM else '非串流'}，"
+          f"思考 {'開' if REASONING else '關'}，模型 {MODEL}）…")
 
     results, wall = run_concurrent_simple(
         pairs, CONCURRENCY, scenario=SCENARIO, run_label=RUN_LABEL,
         base_url=BASE_URL, model=MODEL, api_key=API_KEY, max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE, stream=STREAM, timeout=REQUEST_TIMEOUT,
+        temperature=TEMPERATURE, stream=STREAM, reasoning=REASONING, timeout=REQUEST_TIMEOUT,
     )
 
     summ = summarize(results, wall_seconds=wall)
@@ -326,7 +340,26 @@ def main():
     ts = time.strftime("%Y%m%d-%H%M%S")
     label = (RUN_LABEL or "run").replace("/", "_").replace(" ", "")
     base_path = os.path.join(OUTPUT_DIR, f"simple_{label}_{ts}.xlsx")
-    xlsx_path, json_path = write_outputs(results, summ, base_path)
+    # 本次執行參數（寫進報表第③頁；API_KEY 遮罩）
+    params = [
+        ("BASE_URL", BASE_URL),
+        ("MODEL", MODEL),
+        ("API_KEY", "***" if API_KEY else ""),
+        ("RUN_LABEL", RUN_LABEL),
+        ("N_REQUESTS", N_REQUESTS),
+        ("實際請求數", len(pairs)),
+        ("CONCURRENCY", CONCURRENCY),
+        ("MAX_TOKENS", MAX_TOKENS),
+        ("TEMPERATURE", TEMPERATURE),
+        ("STREAM", STREAM),
+        ("REASONING", REASONING),
+        ("INPUT_LEN", INPUT_LEN),
+        ("DATASET", DATASET or "(合成輸入)"),
+        ("OUTPUT_DIR", OUTPUT_DIR),
+        ("REQUEST_TIMEOUT", REQUEST_TIMEOUT),
+        ("執行時間", ts),
+    ]
+    xlsx_path, json_path = write_outputs(results, summ, base_path, params=params)
     print(f"已輸出：\n  Excel：{xlsx_path}\n  JSON ：{json_path}")
 
 

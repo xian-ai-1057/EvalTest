@@ -291,6 +291,34 @@ def main():
             srecs = _json.load(_f)
         _check(srecs[0].get("answer") == "甲", "simple_bench JSON 明細含 answer")
 
+        # _build_body 帶 chat_template_kwargs.enable_thinking（思考模式開關）
+        from simple_bench import _build_body
+        b_on = _build_body("x", model="m", max_tokens=8, temperature=0.0, stream=True, reasoning=True)
+        b_off = _build_body("x", model="m", max_tokens=8, temperature=0.0, stream=False, reasoning=False)
+        _check(b_on.get("chat_template_kwargs") == {"enable_thinking": True},
+               "_build_body reasoning=True → enable_thinking=True")
+        _check(b_off.get("chat_template_kwargs") == {"enable_thinking": False},
+               "_build_body reasoning=False → enable_thinking=False")
+        _check("stream_options" in b_on and "stream_options" not in b_off,
+               "_build_body 串流才帶 stream_options")
+        rres, _rw = run_concurrent_simple([("q", "a")], 1, scenario="it_reason", run_label="MOCK",
+                                          base_url=base, model="mock", max_tokens=8,
+                                          stream=True, reasoning=False, progress=False)
+        _check(len(rres) == 1 and rres[0].success, "simple_bench reasoning=False 端到端仍成功")
+
+        # 執行參數寫進 Excel 第③頁「執行參數」（params 為選用、向後相容）
+        px, _pj = write_outputs(sres, ssumm, os.path.join(_tmp.mkdtemp(), "it_params_MOCK.xlsx"),
+                                params=[("MODEL", "mock"), ("CONCURRENCY", 2),
+                                        ("STREAM", True), ("REASONING", False)])
+        with _zip.ZipFile(px) as z:
+            _check("xl/worksheets/sheet3.xml" in z.namelist(), "有 params 時產生第三個工作表")
+            _check("執行參數" in z.read("xl/workbook.xml").decode("utf-8"), "第三頁名稱為 執行參數")
+            s3 = z.read("xl/worksheets/sheet3.xml").decode("utf-8")
+            _check("MODEL" in s3 and "CONCURRENCY" in s3, "執行參數頁含參數名 MODEL / CONCURRENCY")
+        with _zip.ZipFile(sx) as z:
+            _check("xl/worksheets/sheet3.xml" not in z.namelist(),
+                   "不傳 params 時不產生第三頁（向後相容）")
+
         # --- 準確率 accuracy：完全相等比對（strip、跳過無正解）---
         print("[準確率] accuracy.compare_exact 完全相等 + 跳過空正解")
         from accuracy import compare_exact, list_fields

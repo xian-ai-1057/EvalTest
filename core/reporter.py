@@ -94,12 +94,25 @@ def _detail_sheet_rows(results) -> list:
     return rows
 
 
-def write_outputs(results: list, summaries, base_path: str, *, gpu_stats_list=None):
+def _params_rows(params) -> list:
+    """把執行參數排成「執行參數」頁的列（表頭＝參數 / 值）。
+
+    params 可為 dict 或 [(key, value), …]；值保留原型別（bool / 數值由 xlsx 寫成對應儲存格格式）。
+    """
+    items = params.items() if isinstance(params, dict) else params
+    rows = [["參數", "值"]]
+    for k, v in items:
+        rows.append([str(k), v])
+    return rows
+
+
+def write_outputs(results: list, summaries, base_path: str, *, gpu_stats_list=None, params=None):
     """輸出一個 Excel 報表（第①頁統計摘要、第②頁每筆明細）＋一個 JSON 明細。
 
     回傳 (xlsx_path, json_path)。情境腳本統一呼叫這支。
     summaries：單一 Summary 或 list[Summary]（如情境② 多併發級別各一筆，於第①頁各成一區塊）。
     gpu_stats_list：對齊每個 summary 的 GpuStats（可含 None；長度需與 summaries 一致）。
+    params：選用，dict 或 [(key, value), …]；有值時於 Excel 末尾多一頁「執行參數」（不影響 JSON）。
     JSON 為完整每筆明細（含 raw_response，便於檢視思考/輸出/usage）。
     """
     if isinstance(summaries, Summary):
@@ -112,10 +125,13 @@ def write_outputs(results: list, summaries, base_path: str, *, gpu_stats_list=No
     json_path = base.with_suffix(".json")
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
 
-    write_workbook(str(xlsx_path), [
+    sheets = [
         ("統計摘要", _summary_sheet_rows(summaries, gpus)),
         ("明細", _detail_sheet_rows(results)),
-    ])
+    ]
+    if params:
+        sheets.append(("執行參數", _params_rows(params)))   # 選用第③頁：本次執行參數
+    write_workbook(str(xlsx_path), sheets)
     json_out = write_json(results, str(json_path))
     return str(xlsx_path), json_out
 

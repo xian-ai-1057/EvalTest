@@ -124,7 +124,7 @@ python simple_bench.py     # 對 OpenAI 相容 /v1/chat/completions 跑分（記
 python accuracy.py         # 欄位比對算準確率（完全相等），輸出準確率摘要＋逐筆比對 Excel
 ```
 
-- **`simple_bench.py`**：設定區可調 `BASE_URL / MODEL / API_KEY / RUN_LABEL / N_REQUESTS / CONCURRENCY / MAX_TOKENS / TEMPERATURE / STREAM / INPUT_LEN / DATASET / OUTPUT_DIR / REQUEST_TIMEOUT`。`STREAM=True` 量 TTFT/TPOT，否則只量 e2e。`DATASET` 留空用合成輸入；填 CSV（欄名認 `question`/`prompt`… 與 `answer`/`正解`…）時，每筆**正解一併寫進輸出明細與 JSON 的 `answer` 欄**，供準確率比對。
+- **`simple_bench.py`**：設定區可調 `BASE_URL / MODEL / API_KEY / RUN_LABEL / N_REQUESTS / CONCURRENCY / MAX_TOKENS / TEMPERATURE / STREAM / REASONING / INPUT_LEN / DATASET / OUTPUT_DIR / REQUEST_TIMEOUT`。`STREAM=True` 量 TTFT/TPOT，否則只量 e2e；`REASONING` 控制思考模式（帶進請求 body 的 `chat_template_kwargs.enable_thinking`，`False` 關閉思考）。`DATASET` 留空用合成輸入；填 CSV（欄名認 `question`/`prompt`… 與 `answer`/`正解`…）時，每筆**正解一併寫進輸出明細與 JSON 的 `answer` 欄**，供準確率比對。報表會額外多一頁 **「執行參數」** 記錄本次設定（`API_KEY` 遮罩為 `***`）。
 - **`accuracy.py`**：設定區指定 `INPUT_PATH`（`simple_bench` 產出的 JSON，或自備 CSV）、`ANSWER_FIELD`、`REPLY_FIELD`、`OUT_PATH`。逐筆 `strip()` 後**完全相等**比對（正解為空者跳過），印出準確率並輸出雙頁 Excel（準確率摘要 / 逐筆比對）。指定的欄名不存在時，會列出檔案裡可用欄位、請你回設定區改。
 
 > 典型流程：編輯 `simple_bench.py` 設定區（含帶 `answer` 的 `DATASET`）→ `python simple_bench.py` → 把 `accuracy.py` 的 `INPUT_PATH` 指到產出的 `.json` → `python accuracy.py`。
